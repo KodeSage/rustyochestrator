@@ -2,7 +2,7 @@
 name = "rustyochestrator"
 version = "0.1.0"
 edition = "2024"
-description = "A high-performance CI/CD pipeline runner with parallel execution and smart caching"
+description = "A high-performance modular, open-source CI/CD ochestrator and pipeline runner with parallel execution and smart caching."
 license = "MIT"
 repository = "https://github.com/KodeSage/rustyochestrator"
 homepage = "https://github.com/KodeSage/rustyochestrator"
