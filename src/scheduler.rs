@@ -243,11 +243,7 @@ fn collect_ready(
                     Some(TaskState::Success) | Some(TaskState::Skipped)
                 )
             });
-            if ready {
-                Some(id.clone())
-            } else {
-                None
-            }
+            if ready { Some(id.clone()) } else { None }
         })
         .collect()
 }
@@ -317,13 +313,11 @@ fn spawn_task(
         });
         let duration_ms = t0.elapsed().as_millis() as u64;
 
-        if success {
-            if let Some(hash) = task.hash.clone() {
-                let mut c = cache.lock().await;
-                c.record(task.id.clone(), hash, true);
-                if let Err(e) = c.save() {
-                    warn!("cache save error: {}", e);
-                }
+        if success && let Some(hash) = task.hash.clone() {
+            let mut c = cache.lock().await;
+            c.record(task.id.clone(), hash, true);
+            if let Err(e) = c.save() {
+                warn!("cache save error: {}", e);
             }
         }
 

@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::collections::{HashMap, VecDeque};
 
 use crate::errors::Result;
-use crate::pipeline::{compute_task_hash, Pipeline, Task};
+use crate::pipeline::{Pipeline, Task, compute_task_hash};
 
 // ── GitHub Actions YAML structures ────────────────────────────────────────────
 
@@ -130,8 +130,8 @@ fn topological_job_order(jobs: &HashMap<String, Job>) -> Vec<String> {
     let mut queue: VecDeque<&str> = {
         let mut roots: Vec<&str> = in_degree
             .iter()
-            .filter(|(_, &d)| d == 0)
-            .map(|(&n, _)| n)
+            .filter(|e| *e.1 == 0)
+            .map(|e| *e.0)
             .collect();
         roots.sort_unstable();
         roots.into_iter().collect()
