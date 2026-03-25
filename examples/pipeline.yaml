@@ -1,0 +1,64 @@
+# Rusty CI pipeline — real commands, real output.
+# Run with: cargo run -- run examples/pipeline.yaml
+
+tasks:
+  # ── 1. Toolchain info ────────────────────────────────────────────────────────
+  - id: toolchain
+    command: |
+      echo "=== Rust toolchain ==="
+      rustc   --version
+      cargo   --version
+      rustfmt --version
+      cargo clippy --version
+
+  # ── 2. Format check ──────────────────────────────────────────────────────────
+  - id: fmt
+    command: cargo fmt --all -- --check
+
+  # ── 3. Strict lints ──────────────────────────────────────────────────────────
+  - id: clippy
+    command: cargo clippy --all-targets -- -D warnings
+    depends_on: [fmt]
+
+  # ── 4. Debug build ───────────────────────────────────────────────────────────
+  - id: build-debug
+    command: |
+      cargo build 2>&1 | tail -3
+      echo "debug binary: $(du -sh target/debug/rustyochestrator | cut -f1)"
+    depends_on: [fmt]
+
+  # ── 5. Unit tests ────────────────────────────────────────────────────────────
+  - id: test
+    command: cargo test --all 2>&1
+    depends_on: [build-debug, clippy]
+
+  # ── 6. Release build ─────────────────────────────────────────────────────────
+  - id: build-release
+    command: |
+      cargo build --release 2>&1 | tail -2
+      echo "release binary: $(du -sh target/release/rustyochestrator | cut -f1)"
+    depends_on: [test]
+
+  # ── 7. Smoke-test the compiled binary ────────────────────────────────────────
+  - id: smoke-test
+    command: |
+      echo "=== Binary info ==="
+      file target/release/rustyochestrator
+
+      echo ""
+      echo "=== --help ==="
+      target/release/rustyochestrator --help
+
+      echo ""
+      echo "=== Run inline smoke pipeline ==="
+      cat > /tmp/rustyochestrator_smoke.yaml <<'YAML'
+      tasks:
+        - id: hello
+          command: "echo hello from compiled rustyochestrator binary"
+        - id: world
+          command: "echo world — pipeline executor works"
+          depends_on: [hello]
+      YAML
+      target/release/rustyochestrator run /tmp/rustyochestrator_smoke.yaml
+      rm /tmp/rustyochestrator_smoke.yaml
+    depends_on: [build-release]
