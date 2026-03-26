@@ -27,7 +27,7 @@ cargo install rustyochestrator --force
 
 ### Option 2 — pre-built binary
 
-Download the binary for your platform from the [latest GitHub release](https://github.com/yourname/rusty/releases/latest), then move it onto your PATH:
+Download the binary for your platform from the [latest GitHub release](https://github.com/KodeSage/rustyochestrator/releases/latest), then move it onto your PATH:
 
 ```bash
 # macOS / Linux
