@@ -27,7 +27,7 @@ cargo install rustyochestrator --force
 
 ### Option 2 — pre-built binary
 
-Download the binary for your platform from the [latest GitHub release](https://github.com/yourname/rusty/releases/latest), then move it onto your PATH:
+Download the binary for your platform from the [latest GitHub release](https://github.com/KodeSage/rustyochestrator/releases/latest), then move it onto your PATH:
 
 ```bash
 # macOS / Linux
@@ -48,7 +48,7 @@ curl -fsSL https://github.com/KodeSage/rustyochestrator/releases/latest/download
 
 ```bash
 git clone https://github.com/KodeSage/rustyochestrator
-cd rusty
+cd rustyochestrator
 cargo build --release
 ./target/release/rustyochestrator --version
 ```
@@ -257,10 +257,11 @@ Any command that runs in `sh -c` works — shell scripts, Python scripts, Makefi
 
 - **Parallel execution** — worker pool backed by Tokio; concurrency defaults to the number of logical CPUs
 - **DAG scheduling** — dependencies are resolved at runtime; tasks run as soon as their deps finish
-- **Content-addressable cache** — each task is hashed by its command + dependency IDs; unchanged tasks are skipped instantly
+- **Content-addressable cache** — each task is hashed by its command + dependency IDs + env; unchanged tasks are skipped instantly
 - **GitHub Actions compatibility** — parse and run `.github/workflows/*.yml` files directly
 - **Parallel workflow execution** — `run-all` runs every workflow file in a directory simultaneously, with each workflow's output prefixed by its name
 - **Live TUI dashboard** — colour-coded per-task progress view with spinners, elapsed time, and a summary bar; auto-detects TTY and falls back to plain log output in CI
+- **Environment variables & secrets** — declare `env:` at pipeline or task level; reference shell secrets with `${{ secrets.NAME }}`; missing secrets abort before execution starts
 - **Retry logic** — failed tasks are retried up to 2 times before being marked failed
 - **Failure propagation** — when a task fails its entire transitive dependent subtree is cancelled immediately
 - **Real-time output** — stdout and stderr from every task are streamed line-by-line as they run
@@ -293,11 +294,12 @@ tasks:
 
 **Task fields:**
 
-| Field        | Required | Description                                 |
-| ------------ | -------- | ------------------------------------------- |
-| `id`         | yes      | Unique identifier for the task              |
-| `command`    | yes      | Shell command to run (executed via `sh -c`) |
-| `depends_on` | no       | List of task IDs that must succeed first    |
+| Field        | Required | Description                                         |
+| ------------ | -------- | --------------------------------------------------- |
+| `id`         | yes      | Unique identifier for the task                      |
+| `command`    | yes      | Shell command to run (executed via `sh -c`)         |
+| `depends_on` | no       | List of task IDs that must succeed first            |
+| `env`        | no       | Map of environment variables for this task          |
 
 Multi-line commands work with YAML block scalars:
 
@@ -310,6 +312,46 @@ tasks:
       du -sh target/release/myapp
     depends_on: [build]
 ```
+
+### Environment variables & secrets
+
+Declare environment variables at the pipeline level (applied to every task) or at the task level (overrides pipeline-level values for that task only).
+
+```yaml
+env:
+  NODE_ENV: production
+  API_URL: https://api.example.com
+
+tasks:
+  - id: build
+    command: "npm run build"
+
+  - id: deploy
+    command: "npm run deploy"
+    env:
+      API_URL: https://staging.example.com  # overrides pipeline-level value
+      API_KEY: "${{ secrets.DEPLOY_KEY }}"  # resolved from shell env at runtime
+```
+
+**Secret references** use the `${{ secrets.NAME }}` syntax. At runtime, `rustyochestrator` reads `NAME` from the current shell environment and passes it to the task process — the value is never written to disk.
+
+**Pre-flight validation**: all secrets are resolved before any task starts. If a referenced secret is missing, the run aborts immediately with a clear error:
+
+```
+Error: secret 'DEPLOY_KEY' referenced by env key 'API_KEY' in task 'deploy' is not set in the environment
+```
+
+**Debug logging** prints env keys when `RUST_LOG=debug` is set. Values for keys containing `SECRET`, `TOKEN`, `KEY`, or `PASSWORD` (case-insensitive) are redacted as `***`.
+
+```bash
+RUST_LOG=debug rustyochestrator run pipeline.yaml
+# DEBUG task=deploy key=API_URL value=https://staging.example.com
+# DEBUG task=deploy key=API_KEY value=***
+```
+
+**Cache invalidation**: changing any env value (including secrets) invalidates the task's cache hash, forcing a re-run.
+
+In GitHub Actions workflow files, `env:` blocks at the workflow, job, and step levels are all parsed and merged. Plain values and `${{ secrets.NAME }}` references are forwarded; other `${{ }}` expressions (matrix variables, context references) are silently dropped since they require a real Actions runner.
 
 ### GitHub Actions format
 
@@ -561,7 +603,7 @@ Cache entries are stored in `.rustyochestrator/cache.json`.
 
 A task is a **cache hit** when:
 
-1. Its SHA-256 hash (of `command + dependency IDs`) matches the stored entry
+1. Its SHA-256 hash (of `command + dependency IDs + env key/value pairs`) matches the stored entry
 2. The previous run recorded `success: true`
 
 ```json
