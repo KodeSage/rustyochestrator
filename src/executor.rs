@@ -8,34 +8,39 @@ const MAX_RETRIES: u32 = 2;
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Execute a task with up to MAX_RETRIES retries. Returns `true` on success.
-pub async fn execute_task(task: &Task) -> Result<bool> {
+/// `prefix` is prepended to every log line (e.g. `"[ci] "` for workflow isolation).
+pub async fn execute_task(task: &Task, prefix: &str) -> Result<bool> {
     for attempt in 1..=(MAX_RETRIES + 1) {
         if attempt > 1 {
             println!(
-                "[RETRY] Attempt {}/{} for task '{}'",
+                "{}[RETRY] Attempt {}/{} for task '{}'",
+                prefix,
                 attempt,
                 MAX_RETRIES + 1,
                 task.id
             );
         }
 
-        match run_command(&task.id, &task.command).await {
+        match run_command(&task.id, &task.command, prefix).await {
             Ok(true) => return Ok(true),
 
             Ok(false) if attempt <= MAX_RETRIES => {
-                println!("[WARN] Task '{}' failed, retrying…", task.id);
+                println!("{}[WARN] Task '{}' failed, retrying…", prefix, task.id);
                 continue;
             }
             Ok(false) => {
                 println!(
-                    "[FAILED] Task '{}' failed after {} attempt(s)",
-                    task.id, attempt
+                    "{}[FAILED] Task '{}' failed after {} attempt(s)",
+                    prefix, task.id, attempt
                 );
                 return Ok(false);
             }
 
             Err(e) if attempt <= MAX_RETRIES => {
-                println!("[WARN] Task '{}' error: {} – retrying…", task.id, e);
+                println!(
+                    "{}[WARN] Task '{}' error: {} – retrying…",
+                    prefix, task.id, e
+                );
                 continue;
             }
             Err(e) => return Err(e),
@@ -46,8 +51,8 @@ pub async fn execute_task(task: &Task) -> Result<bool> {
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
-async fn run_command(task_id: &str, command: &str) -> Result<bool> {
-    println!("[INFO] Starting task: {}", task_id);
+async fn run_command(task_id: &str, command: &str, prefix: &str) -> Result<bool> {
+    println!("{}[INFO] Starting task: {}", prefix, task_id);
     tracing::info!(task = task_id, "starting");
 
     let mut child = Command::new("sh")
@@ -65,18 +70,20 @@ async fn run_command(task_id: &str, command: &str) -> Result<bool> {
 
     let tid_out = task_id.to_string();
     let tid_err = task_id.to_string();
+    let pfx_out = prefix.to_string();
+    let pfx_err = prefix.to_string();
 
     let h_out = tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            println!("  [{}] {}", tid_out, line);
+            println!("{}  [{}] {}", pfx_out, tid_out, line);
         }
     });
 
     let h_err = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            eprintln!("  [{}|err] {}", tid_err, line);
+            eprintln!("{}  [{}|err] {}", pfx_err, tid_err, line);
         }
     });
 
@@ -85,11 +92,14 @@ async fn run_command(task_id: &str, command: &str) -> Result<bool> {
     let status = child.wait().await.map_err(RustyError::Io)?;
 
     if status.success() {
-        println!("[INFO] Completed task: {}", task_id);
+        println!("{}[INFO] Completed task: {}", prefix, task_id);
         tracing::info!(task = task_id, "completed");
         Ok(true)
     } else {
-        println!("[FAIL] Task '{}' exited with status {}", task_id, status);
+        println!(
+            "{}[FAIL] Task '{}' exited with status {}",
+            prefix, task_id, status
+        );
         tracing::error!(task = task_id, %status, "failed");
         Ok(false)
     }

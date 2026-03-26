@@ -208,6 +208,100 @@ async fn main() {
                 println!("Run:  rustyochestrator connect --token <token> --url <dashboard-url>");
             }
         },
+
+        Commands::RunAll { dir, concurrency } => {
+            let workers = concurrency.unwrap_or_else(num_cpus::get);
+
+            // Collect all .yml / .yaml files in the directory
+            let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+                die(&format!("cannot read directory '{}': {}", dir, e));
+            });
+
+            let mut workflow_paths: Vec<std::path::PathBuf> = entries
+                .filter_map(|e| {
+                    let path = e.ok()?.path();
+                    let ext = path.extension()?.to_str()?;
+                    if ext == "yml" || ext == "yaml" {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            workflow_paths.sort(); // deterministic order
+
+            if workflow_paths.is_empty() {
+                eprintln!("error: no .yml/.yaml files found in '{}'", dir);
+                std::process::exit(1);
+            }
+
+            tracing::info!(
+                count = workflow_paths.len(),
+                dir = %dir,
+                "running workflows simultaneously"
+            );
+
+            let reporter_cfg = config::load();
+
+            // Load all pipelines up front so errors surface before any execution starts
+            let workflows: Vec<(String, Pipeline)> = workflow_paths
+                .iter()
+                .map(|path| {
+                    let path_str = path.to_string_lossy().to_string();
+                    let name = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("workflow")
+                        .to_string();
+                    let pipeline = load_pipeline(&path_str);
+                    tracing::info!(workflow = %name, tasks = pipeline.tasks.len(), "loaded");
+                    (name, pipeline)
+                })
+                .collect();
+
+            // Spawn each workflow as a concurrent tokio task
+            let mut handles = Vec::new();
+            for (name, pipeline) in workflows {
+                let cfg = reporter_cfg.clone();
+                let handle = tokio::spawn(async move {
+                    let mut scheduler = Scheduler::new(pipeline, workers).with_name(name.clone());
+                    if let Some(c) = cfg {
+                        let r = reporter::Reporter::new(c.dashboard_url.clone(), c.token.clone());
+                        scheduler = scheduler.with_reporter(r);
+                    }
+                    let result = scheduler.run().await;
+                    (name, result)
+                });
+                handles.push(handle);
+            }
+
+            // Await all workflows and report final status
+            let mut all_ok = true;
+            for handle in handles {
+                match handle.await {
+                    Ok((name, Ok(true))) => {
+                        tracing::info!(workflow = %name, "completed successfully");
+                    }
+                    Ok((name, Ok(false))) => {
+                        eprintln!("error: workflow '{}' finished with failures", name);
+                        all_ok = false;
+                    }
+                    Ok((name, Err(e))) => {
+                        eprintln!("error: workflow '{}' error: {}", name, e);
+                        all_ok = false;
+                    }
+                    Err(e) => {
+                        eprintln!("error: a workflow task panicked: {}", e);
+                        all_ok = false;
+                    }
+                }
+            }
+
+            if !all_ok {
+                std::process::exit(1);
+            }
+        }
     }
 }
 

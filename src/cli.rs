@@ -62,6 +62,16 @@ pub enum Commands {
 
     /// Show connection status
     Status,
+
+    /// Run all workflow files in a directory simultaneously
+    RunAll {
+        /// Directory containing workflow YAML files [default: .github/workflows]
+        #[arg(default_value = ".github/workflows")]
+        dir: String,
+        /// Maximum concurrent tasks per workflow [default: num_cpus]
+        #[arg(short, long)]
+        concurrency: Option<usize>,
+    },
 }
 
 #[derive(Args)]

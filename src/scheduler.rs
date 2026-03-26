@@ -110,6 +110,8 @@ impl Scheduler {
             .map(|t| t.id.clone())
             .collect();
 
+        let prefix = format!("[{}] ", self.pipeline_name);
+
         for id in boot {
             states.insert(id.clone(), TaskState::Running);
             running += 1;
@@ -118,6 +120,7 @@ impl Scheduler {
                 tx.clone(),
                 sem.clone(),
                 cache.clone(),
+                prefix.clone(),
             );
         }
 
@@ -175,6 +178,7 @@ impl Scheduler {
                     tx.clone(),
                     sem.clone(),
                     cache.clone(),
+                    prefix.clone(),
                 );
             }
         }
@@ -281,6 +285,7 @@ fn spawn_task(
     tx: mpsc::Sender<TaskOutcome>,
     sem: Arc<Semaphore>,
     cache: Arc<Mutex<Cache>>,
+    prefix: String,
 ) {
     tokio::spawn(async move {
         let _permit = sem.acquire().await.expect("semaphore closed");
@@ -294,7 +299,7 @@ fn spawn_task(
         };
 
         if hit {
-            println!("[CACHE HIT] Skipping task: {}", task.id);
+            println!("{}[CACHE HIT] Skipping task: {}", prefix, task.id);
             let _ = tx
                 .send(TaskOutcome {
                     id: task.id,
@@ -307,7 +312,7 @@ fn spawn_task(
         }
 
         let t0 = Instant::now();
-        let success = execute_task(&task).await.unwrap_or_else(|e| {
+        let success = execute_task(&task, &prefix).await.unwrap_or_else(|e| {
             error!("task '{}' I/O error: {}", task.id, e);
             false
         });
