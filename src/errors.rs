@@ -16,6 +16,15 @@ pub enum RustyError {
 
     #[error("Missing dependency: task '{task}' depends on '{dep}' which does not exist")]
     MissingDependency { task: String, dep: String },
+
+    #[error(
+        "secret '{secret}' referenced by env key '{key}' in task '{task}' is not set in the environment"
+    )]
+    MissingSecret {
+        key: String,
+        secret: String,
+        task: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, RustyError>;

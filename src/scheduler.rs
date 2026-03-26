@@ -6,11 +6,61 @@ use tokio::sync::{Mutex, Semaphore};
 use tracing::{error, info, warn};
 
 use crate::cache::Cache;
-use crate::errors::Result;
+use crate::errors::{Result, RustyError};
 use crate::executor::execute_task;
 use crate::pipeline::{Pipeline, Task, TaskState};
 use crate::reporter::{Event, PipelineCompletedArgs, Reporter};
 use crate::tui::Dashboard;
+
+// ── Env helpers ───────────────────────────────────────────────────────────────
+
+/// Merge pipeline-level env with task-level env (task wins on conflict).
+fn merge_env(
+    pipeline_env: &HashMap<String, String>,
+    task_env: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    pipeline_env
+        .iter()
+        .chain(task_env.iter())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// If `value` is a `${{ secrets.NAME }}` reference return `Some("NAME")`.
+fn secret_ref(value: &str) -> Option<&str> {
+    let t = value.trim();
+    if t.starts_with("${{") && t.ends_with("}}") {
+        let inner = t[3..t.len() - 2].trim();
+        inner.strip_prefix("secrets.").map(str::trim)
+    } else {
+        None
+    }
+}
+
+/// Resolve all env values: substitute `${{ secrets.NAME }}` from the shell environment.
+/// Fails immediately if any referenced secret is not set, naming the task and key.
+fn resolve_env(task_id: &str, env: &HashMap<String, String>) -> Result<HashMap<String, String>> {
+    let mut resolved = HashMap::with_capacity(env.len());
+    for (key, value) in env {
+        if let Some(secret_name) = secret_ref(value) {
+            match std::env::var(secret_name) {
+                Ok(val) => {
+                    resolved.insert(key.clone(), val);
+                }
+                Err(_) => {
+                    return Err(RustyError::MissingSecret {
+                        key: key.clone(),
+                        secret: secret_name.to_string(),
+                        task: task_id.to_string(),
+                    });
+                }
+            }
+        } else {
+            resolved.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(resolved)
+}
 
 // ── Channel message ───────────────────────────────────────────────────────────
 
@@ -70,6 +120,19 @@ impl Scheduler {
 
     /// Run the pipeline and return `true` if every task succeeded / was skipped.
     pub async fn run(self) -> Result<bool> {
+        // ── Pre-flight: resolve all secrets before any task runs ─────────────
+        // Build a map of task_id → resolved env so missing secrets surface
+        // immediately with a clear error rather than failing mid-pipeline.
+        let resolved_envs: Arc<HashMap<String, HashMap<String, String>>> = {
+            let mut map = HashMap::new();
+            for task in &self.pipeline.tasks {
+                let merged = merge_env(&self.pipeline.env, &task.env);
+                let resolved = resolve_env(&task.id, &merged)?;
+                map.insert(task.id.clone(), resolved);
+            }
+            Arc::new(map)
+        };
+
         let cache = Arc::new(Mutex::new(Cache::load()?));
         let sem = Arc::new(Semaphore::new(self.concurrency));
 
@@ -134,6 +197,7 @@ impl Scheduler {
                 cache.clone(),
                 prefix.clone(),
                 quiet,
+                resolved_envs.clone(),
             );
         }
 
@@ -208,6 +272,7 @@ impl Scheduler {
                     cache.clone(),
                     prefix.clone(),
                     quiet,
+                    resolved_envs.clone(),
                 );
             }
         }
@@ -321,6 +386,7 @@ fn spawn_task(
     cache: Arc<Mutex<Cache>>,
     prefix: String,
     quiet: bool,
+    resolved_envs: Arc<HashMap<String, HashMap<String, String>>>,
 ) {
     tokio::spawn(async move {
         let _permit = sem.acquire().await.expect("semaphore closed");
@@ -348,8 +414,11 @@ fn spawn_task(
             return;
         }
 
+        let empty_env = HashMap::new();
+        let env = resolved_envs.get(&task.id).unwrap_or(&empty_env);
+
         let t0 = Instant::now();
-        let success = execute_task(&task, &prefix, quiet)
+        let success = execute_task(&task, &prefix, quiet, env)
             .await
             .unwrap_or_else(|e| {
                 error!("task '{}' I/O error: {}", task.id, e);

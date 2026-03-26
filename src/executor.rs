@@ -1,16 +1,40 @@
 use crate::errors::{Result, RustyError};
 use crate::pipeline::Task;
+use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 const MAX_RETRIES: u32 = 2;
+
+/// Returns `true` if the env key looks like a secret (should be redacted in logs).
+fn is_sensitive(key: &str) -> bool {
+    let k = key.to_ascii_uppercase();
+    k.contains("SECRET") || k.contains("TOKEN") || k.contains("KEY") || k.contains("PASSWORD")
+}
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Execute a task with up to MAX_RETRIES retries. Returns `true` on success.
 /// `prefix` is prepended to every log line (e.g. `"[ci] "` for workflow isolation).
 /// `quiet` suppresses all stdout/stderr output (used when the TUI dashboard is active).
-pub async fn execute_task(task: &Task, prefix: &str, quiet: bool) -> Result<bool> {
+/// `env` is the fully resolved (secrets substituted) environment map for the process.
+pub async fn execute_task(
+    task: &Task,
+    prefix: &str,
+    quiet: bool,
+    env: &HashMap<String, String>,
+) -> Result<bool> {
+    // Debug-log env keys so users can verify what was passed (values redacted for secrets).
+    if !env.is_empty() {
+        for (k, v) in env {
+            if is_sensitive(k) {
+                tracing::debug!(task = task.id.as_str(), key = k, value = "***", "env var");
+            } else {
+                tracing::debug!(task = task.id.as_str(), key = k, value = v, "env var");
+            }
+        }
+    }
+
     for attempt in 1..=(MAX_RETRIES + 1) {
         if attempt > 1 && !quiet {
             println!(
@@ -22,7 +46,7 @@ pub async fn execute_task(task: &Task, prefix: &str, quiet: bool) -> Result<bool
             );
         }
 
-        match run_command(&task.id, &task.command, prefix, quiet).await {
+        match run_command(&task.id, &task.command, prefix, quiet, env).await {
             Ok(true) => return Ok(true),
 
             Ok(false) if attempt <= MAX_RETRIES => {
@@ -58,7 +82,13 @@ pub async fn execute_task(task: &Task, prefix: &str, quiet: bool) -> Result<bool
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
-async fn run_command(task_id: &str, command: &str, prefix: &str, quiet: bool) -> Result<bool> {
+async fn run_command(
+    task_id: &str,
+    command: &str,
+    prefix: &str,
+    quiet: bool,
+    env: &HashMap<String, String>,
+) -> Result<bool> {
     if !quiet {
         println!("{}[INFO] Starting task: {}", prefix, task_id);
     }
@@ -67,6 +97,7 @@ async fn run_command(task_id: &str, command: &str, prefix: &str, quiet: bool) ->
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(command)
+        .envs(env)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
