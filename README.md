@@ -48,7 +48,7 @@ curl -fsSL https://github.com/KodeSage/rustyochestrator/releases/latest/download
 
 ```bash
 git clone https://github.com/KodeSage/rustyochestrator
-cd rusty
+cd rustyochestrator
 cargo build --release
 ./target/release/rustyochestrator --version
 ```
