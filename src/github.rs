@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::errors::Result;
 use crate::pipeline::{Pipeline, Task, compute_task_hash};
@@ -8,6 +8,8 @@ use crate::pipeline::{Pipeline, Task, compute_task_hash};
 
 #[derive(Debug, Deserialize)]
 struct Workflow {
+    #[serde(default)]
+    env: HashMap<String, String>,
     #[serde(default)]
     jobs: HashMap<String, Job>,
 }
@@ -19,12 +21,16 @@ struct Job {
     /// `needs` can be a single string or a list of strings.
     #[serde(default, deserialize_with = "string_or_vec")]
     needs: Vec<String>,
+    #[serde(default)]
+    env: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Step {
     pub run: Option<String>,
     pub name: Option<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 // ── Parser ────────────────────────────────────────────────────────────────────
@@ -47,13 +53,54 @@ pub fn parse_github_workflow(content: &str) -> Result<Pipeline> {
     let mut tasks: Vec<Task> = Vec::new();
     let mut job_tail: HashMap<String, String> = HashMap::new();
 
+    // Filter a GitHub Actions env map: keep plain values and ${{ secrets.NAME }} refs;
+    // drop other ${{ }} expressions (matrix vars, context refs) that can't run locally.
+    let filter_env = |raw: &HashMap<String, String>| -> HashMap<String, String> {
+        raw.iter()
+            .filter_map(|(k, v)| {
+                if !v.contains("${{") {
+                    return Some((k.clone(), v.clone()));
+                }
+                // Allow ${{ secrets.NAME }} — resolved at runtime from shell env.
+                let t = v.trim();
+                if t.starts_with("${{") && t.ends_with("}}") {
+                    let inner = t[3..t.len() - 2].trim();
+                    if inner.starts_with("secrets.") {
+                        return Some((k.clone(), v.clone()));
+                    }
+                }
+                // Skip everything else (${{ env.X }}, ${{ github.ref }}, etc.)
+                tracing::debug!(key = k, value = v, "skipping GitHub Actions env expression");
+                None
+            })
+            .collect()
+    };
+
+    let workflow_env = filter_env(&workflow.env);
+
     for job_name in &job_order {
         let job = &workflow.jobs[job_name];
+        let job_env = filter_env(&job.env);
         let mut prev: Option<String> = None;
 
         for (idx, step) in job.steps.iter().enumerate() {
             let run_cmd = match &step.run {
-                Some(r) => r.trim().to_string(),
+                Some(r) => {
+                    let cmd = r.trim().to_string();
+                    // Skip steps whose command contains unresolvable GitHub Actions
+                    // expressions (${{ ... }}) — these require a real Actions runner
+                    // (e.g. matrix variables, secrets, context references).
+                    if cmd.contains("${{") {
+                        let name = step.name.as_deref().unwrap_or("unnamed step");
+                        tracing::debug!(
+                            job = job_name.as_str(),
+                            step = name,
+                            "skipping step — contains unresolvable ${{{{...}}}} expression"
+                        );
+                        continue;
+                    }
+                    cmd
+                }
                 None => continue, // `uses:` steps are skipped
             };
 
@@ -88,11 +135,21 @@ pub fn parse_github_workflow(content: &str) -> Result<Pipeline> {
                 }
             }
 
+            // Merge env: workflow → job → step (later wins).
+            let step_env = filter_env(&step.env);
+            let task_env: HashMap<String, String> = workflow_env
+                .iter()
+                .chain(job_env.iter())
+                .chain(step_env.iter())
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+
             prev = Some(task_id.clone());
             tasks.push(Task {
                 id: task_id,
                 command: run_cmd,
                 depends_on,
+                env: task_env,
                 hash: None,
             });
         }
@@ -103,10 +160,22 @@ pub fn parse_github_workflow(content: &str) -> Result<Pipeline> {
     }
 
     for task in &mut tasks {
-        task.hash = Some(compute_task_hash(&task.command, &task.depends_on));
+        let env_btree: BTreeMap<&str, &str> = task
+            .env
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        task.hash = Some(compute_task_hash(
+            &task.command,
+            &task.depends_on,
+            &env_btree,
+        ));
     }
 
-    Ok(Pipeline { tasks })
+    Ok(Pipeline {
+        tasks,
+        env: HashMap::new(), // workflow-level env already merged into each task
+    })
 }
 
 /// Return job names sorted in topological order (required jobs come first).

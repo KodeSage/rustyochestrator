@@ -6,10 +6,61 @@ use tokio::sync::{Mutex, Semaphore};
 use tracing::{error, info, warn};
 
 use crate::cache::Cache;
-use crate::errors::Result;
+use crate::errors::{Result, RustyError};
 use crate::executor::execute_task;
 use crate::pipeline::{Pipeline, Task, TaskState};
 use crate::reporter::{Event, PipelineCompletedArgs, Reporter};
+use crate::tui::Dashboard;
+
+// ── Env helpers ───────────────────────────────────────────────────────────────
+
+/// Merge pipeline-level env with task-level env (task wins on conflict).
+fn merge_env(
+    pipeline_env: &HashMap<String, String>,
+    task_env: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    pipeline_env
+        .iter()
+        .chain(task_env.iter())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// If `value` is a `${{ secrets.NAME }}` reference return `Some("NAME")`.
+fn secret_ref(value: &str) -> Option<&str> {
+    let t = value.trim();
+    if t.starts_with("${{") && t.ends_with("}}") {
+        let inner = t[3..t.len() - 2].trim();
+        inner.strip_prefix("secrets.").map(str::trim)
+    } else {
+        None
+    }
+}
+
+/// Resolve all env values: substitute `${{ secrets.NAME }}` from the shell environment.
+/// Fails immediately if any referenced secret is not set, naming the task and key.
+fn resolve_env(task_id: &str, env: &HashMap<String, String>) -> Result<HashMap<String, String>> {
+    let mut resolved = HashMap::with_capacity(env.len());
+    for (key, value) in env {
+        if let Some(secret_name) = secret_ref(value) {
+            match std::env::var(secret_name) {
+                Ok(val) => {
+                    resolved.insert(key.clone(), val);
+                }
+                Err(_) => {
+                    return Err(RustyError::MissingSecret {
+                        key: key.clone(),
+                        secret: secret_name.to_string(),
+                        task: task_id.to_string(),
+                    });
+                }
+            }
+        } else {
+            resolved.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(resolved)
+}
 
 // ── Channel message ───────────────────────────────────────────────────────────
 
@@ -27,6 +78,7 @@ pub struct Scheduler {
     pipeline: Pipeline,
     concurrency: usize,
     reporter: Option<Reporter>,
+    dashboard: Option<Arc<Dashboard>>,
     pipeline_id: String,
     pipeline_name: String,
 }
@@ -44,6 +96,7 @@ impl Scheduler {
             pipeline,
             concurrency,
             reporter: None,
+            dashboard: None,
             pipeline_id: id,
             pipeline_name: name,
         }
@@ -60,8 +113,26 @@ impl Scheduler {
         self
     }
 
+    pub fn with_dashboard(mut self, dashboard: Arc<Dashboard>) -> Self {
+        self.dashboard = Some(dashboard);
+        self
+    }
+
     /// Run the pipeline and return `true` if every task succeeded / was skipped.
     pub async fn run(self) -> Result<bool> {
+        // ── Pre-flight: resolve all secrets before any task runs ─────────────
+        // Build a map of task_id → resolved env so missing secrets surface
+        // immediately with a clear error rather than failing mid-pipeline.
+        let resolved_envs: Arc<HashMap<String, HashMap<String, String>>> = {
+            let mut map = HashMap::new();
+            for task in &self.pipeline.tasks {
+                let merged = merge_env(&self.pipeline.env, &task.env);
+                let resolved = resolve_env(&task.id, &merged)?;
+                map.insert(task.id.clone(), resolved);
+            }
+            Arc::new(map)
+        };
+
         let cache = Arc::new(Mutex::new(Cache::load()?));
         let sem = Arc::new(Semaphore::new(self.concurrency));
 
@@ -110,14 +181,23 @@ impl Scheduler {
             .map(|t| t.id.clone())
             .collect();
 
+        let prefix = format!("[{}] ", self.pipeline_name);
+        let quiet = self.dashboard.is_some();
+
         for id in boot {
             states.insert(id.clone(), TaskState::Running);
             running += 1;
+            if let Some(ref d) = self.dashboard {
+                d.task_started(&id);
+            }
             spawn_task(
                 tasks_map[&id].clone(),
                 tx.clone(),
                 sem.clone(),
                 cache.clone(),
+                prefix.clone(),
+                quiet,
+                resolved_envs.clone(),
             );
         }
 
@@ -133,7 +213,7 @@ impl Scheduler {
             };
             running -= 1;
 
-            // Report task completion to dashboard
+            // Report task completion to remote dashboard
             if let Some(ref r) = self.reporter {
                 r.send(Event::task_completed(
                     &self.pipeline_id,
@@ -147,19 +227,31 @@ impl Scheduler {
             let new_state = if outcome.skipped {
                 info!("task '{}' skipped (cache hit)", outcome.id);
                 cached_tasks += 1;
+                if let Some(ref d) = self.dashboard {
+                    d.task_completed(&outcome.id, outcome.duration_ms, true);
+                }
                 TaskState::Skipped
             } else if outcome.success {
                 info!("task '{}' succeeded", outcome.id);
+                if let Some(ref d) = self.dashboard {
+                    d.task_completed(&outcome.id, outcome.duration_ms, false);
+                }
                 TaskState::Success
             } else {
                 error!("task '{}' failed", outcome.id);
                 failed_tasks += 1;
+                if let Some(ref d) = self.dashboard {
+                    d.task_failed(&outcome.id, outcome.duration_ms);
+                }
                 let deps = transitive_dependents(&outcome.id, &states, &tasks_map);
                 for dep_id in deps {
                     warn!(
                         "[SKIP] '{}' skipped because '{}' failed",
                         dep_id, outcome.id
                     );
+                    if let Some(ref d) = self.dashboard {
+                        d.task_cancelled(&dep_id);
+                    }
                     states.insert(dep_id, TaskState::Failed);
                 }
                 TaskState::Failed
@@ -170,11 +262,17 @@ impl Scheduler {
             for id in ready {
                 states.insert(id.clone(), TaskState::Running);
                 running += 1;
+                if let Some(ref d) = self.dashboard {
+                    d.task_started(&id);
+                }
                 spawn_task(
                     tasks_map[&id].clone(),
                     tx.clone(),
                     sem.clone(),
                     cache.clone(),
+                    prefix.clone(),
+                    quiet,
+                    resolved_envs.clone(),
                 );
             }
         }
@@ -189,6 +287,11 @@ impl Scheduler {
 
         if n_failed > 0 {
             error!("{} task(s) failed", n_failed);
+        }
+
+        // Freeze the TUI dashboard
+        if let Some(ref d) = self.dashboard {
+            d.finish(pipeline_success);
         }
 
         // Emit pipeline_completed
@@ -281,6 +384,9 @@ fn spawn_task(
     tx: mpsc::Sender<TaskOutcome>,
     sem: Arc<Semaphore>,
     cache: Arc<Mutex<Cache>>,
+    prefix: String,
+    quiet: bool,
+    resolved_envs: Arc<HashMap<String, HashMap<String, String>>>,
 ) {
     tokio::spawn(async move {
         let _permit = sem.acquire().await.expect("semaphore closed");
@@ -294,7 +400,9 @@ fn spawn_task(
         };
 
         if hit {
-            println!("[CACHE HIT] Skipping task: {}", task.id);
+            if !quiet {
+                println!("{}[CACHE HIT] Skipping task: {}", prefix, task.id);
+            }
             let _ = tx
                 .send(TaskOutcome {
                     id: task.id,
@@ -306,11 +414,16 @@ fn spawn_task(
             return;
         }
 
+        let empty_env = HashMap::new();
+        let env = resolved_envs.get(&task.id).unwrap_or(&empty_env);
+
         let t0 = Instant::now();
-        let success = execute_task(&task).await.unwrap_or_else(|e| {
-            error!("task '{}' I/O error: {}", task.id, e);
-            false
-        });
+        let success = execute_task(&task, &prefix, quiet, env)
+            .await
+            .unwrap_or_else(|e| {
+                error!("task '{}' I/O error: {}", task.id, e);
+                false
+            });
         let duration_ms = t0.elapsed().as_millis() as u64;
 
         if success && let Some(hash) = task.hash.clone() {

@@ -1,7 +1,7 @@
 use crate::errors::{Result, RustyError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 // ── Data structures ──────────────────────────────────────────────────────────
 
@@ -11,7 +11,10 @@ pub struct Task {
     pub command: String,
     #[serde(default)]
     pub depends_on: Vec<String>,
-    /// SHA-256 of (command + dep ids); populated after parsing, never in YAML.
+    /// Environment variables for this task (merged with pipeline-level env at runtime).
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// SHA-256 of (command + dep ids + env keys/values); populated after parsing, never in YAML.
     #[serde(skip)]
     pub hash: Option<String>,
 }
@@ -27,9 +30,12 @@ pub enum TaskState {
 
 // ── Pipeline ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Pipeline {
     pub tasks: Vec<Task>,
+    /// Pipeline-level environment variables applied to every task unless overridden.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 impl Pipeline {
@@ -37,7 +43,15 @@ impl Pipeline {
     pub fn from_yaml(content: &str) -> Result<Self> {
         let mut pipeline: Pipeline = serde_yaml::from_str(content)?;
         for task in &mut pipeline.tasks {
-            task.hash = Some(compute_task_hash(&task.command, &task.depends_on));
+            // Merge pipeline env + task env (task wins) for hashing — uses BTreeMap for
+            // deterministic key ordering so the hash is stable across runs.
+            let merged: BTreeMap<&str, &str> = pipeline
+                .env
+                .iter()
+                .chain(task.env.iter())
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            task.hash = Some(compute_task_hash(&task.command, &task.depends_on, &merged));
         }
         Ok(pipeline)
     }
@@ -177,11 +191,21 @@ impl Pipeline {
 
 // ── Hashing ──────────────────────────────────────────────────────────────────
 
-pub fn compute_task_hash(command: &str, depends_on: &[String]) -> String {
+pub fn compute_task_hash(
+    command: &str,
+    depends_on: &[String],
+    env: &BTreeMap<&str, &str>,
+) -> String {
     let mut h = Sha256::new();
     h.update(command.as_bytes());
     for dep in depends_on {
         h.update(dep.as_bytes());
+    }
+    // Include env key=value pairs so cache is invalidated when env changes.
+    for (k, v) in env {
+        h.update(k.as_bytes());
+        h.update(b"=");
+        h.update(v.as_bytes());
     }
     hex::encode(h.finalize())
 }

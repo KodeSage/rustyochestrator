@@ -1,0 +1,16 @@
+{
+  "entries": {
+    "show-pipeline-env": {
+      "hash": "e756d644b1934afd7a171242f76882210633370be2bb7abbc6c60eefa0f615cd",
+      "success": true
+    },
+    "show-secret": {
+      "hash": "ec30803aad292be799698fe0599e875316fb6eb8466716842f25114f16d4c9c8",
+      "success": true
+    },
+    "show-task-env": {
+      "hash": "c1df40a283155f9fa64f88220ab0a7d6f5de419921190bd8e11dd3d729b5d66f",
+      "success": true
+    }
+  }
+}

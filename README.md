@@ -1,7 +1,7 @@
 # 🦀 Rusty Orchestrator
+
 [![crates.io](https://img.shields.io/crates/v/rustyochestrator.svg)](https://crates.io/crates/rustyochestrator)
 [![license](https://img.shields.io/crates/l/rustyochestrator.svg)](LICENSE)
-
 
 A high-performance CI/CD pipeline runner written in Rust.
 
@@ -73,7 +73,7 @@ rustyochestrator run pipeline.yaml
 ```yaml
 tasks:
   - id: install
-    command: "npm install"   # or pip install, cargo fetch, etc.
+    command: "npm install" # or pip install, cargo fetch, etc.
 
   - id: build
     command: "npm run build"
@@ -128,6 +128,10 @@ rustyochestrator cache clean
 rustyochestrator init
 rustyochestrator init my-pipeline.yaml   # custom filename
 
+# Run all workflows in a directory simultaneously
+rustyochestrator run-all .github/workflows
+rustyochestrator run-all ./my-pipelines --concurrency 4
+
 # Debug logging
 RUST_LOG=debug rustyochestrator run pipeline.yaml
 ```
@@ -148,6 +152,7 @@ cargo run -- graph examples/pipeline.yaml
 cargo run -- cache show
 cargo run -- cache clean
 cargo run -- init
+cargo run -- run-all .github/workflows
 
 # Build and run the release binary directly
 cargo build --release
@@ -254,6 +259,8 @@ Any command that runs in `sh -c` works — shell scripts, Python scripts, Makefi
 - **DAG scheduling** — dependencies are resolved at runtime; tasks run as soon as their deps finish
 - **Content-addressable cache** — each task is hashed by its command + dependency IDs; unchanged tasks are skipped instantly
 - **GitHub Actions compatibility** — parse and run `.github/workflows/*.yml` files directly
+- **Parallel workflow execution** — `run-all` runs every workflow file in a directory simultaneously, with each workflow's output prefixed by its name
+- **Live TUI dashboard** — colour-coded per-task progress view with spinners, elapsed time, and a summary bar; auto-detects TTY and falls back to plain log output in CI
 - **Retry logic** — failed tasks are retried up to 2 times before being marked failed
 - **Failure propagation** — when a task fails its entire transitive dependent subtree is cancelled immediately
 - **Real-time output** — stdout and stderr from every task are streamed line-by-line as they run
@@ -343,15 +350,71 @@ Mapping rules:
 ### `run` — execute a pipeline
 
 ```bash
-rustyochestrator run <pipeline.yaml> [--concurrency <N>]
+rustyochestrator run <pipeline.yaml> [--concurrency <N>] [--no-tui]
 ```
 
 ```bash
 rustyochestrator run pipeline.yaml
 rustyochestrator run pipeline.yaml --concurrency 4
 rustyochestrator run .github/workflows/ci.yml      # GitHub Actions format
+rustyochestrator run pipeline.yaml --no-tui        # force plain log output
 RUST_LOG=debug rustyochestrator run pipeline.yaml  # verbose logging
 ```
+
+When stdout is a TTY the TUI dashboard is shown automatically:
+
+```
+rustyochestrator — pipeline.yaml   elapsed 00:00:12
+
+  ✓ toolchain                        0.8s   [cached]
+  ✓ fmt                              1.2s
+  ⠸ clippy                           12s    [running]
+  ⠸ build-debug                      9s     [running]
+  ◌ test                                    [waiting]
+  ◌ build-release                           [waiting]
+  ◌ smoke-test                              [waiting]
+
+  ████████░░░░░░░░░░░░░░░░  2/7  2 done  2 running  3 pending  0 failed
+```
+
+Use `--no-tui` to force plain scrolling output (e.g. when piping to a file or running in CI without a pseudo-TTY).
+
+In non-TTY environments (CI, `| tee`, `> file`) the dashboard is suppressed automatically and the plain log format is used instead.
+
+---
+
+### `run-all` — run all workflows in a directory simultaneously
+
+Discovers every `.yml` and `.yaml` file in the given directory, loads them all, then runs them concurrently — just like GitHub Actions fires multiple workflow files in parallel. Each workflow's output is prefixed with its filename so interleaved logs are always identifiable.
+
+```bash
+rustyochestrator run-all <dir> [--concurrency <N>]
+```
+
+```bash
+rustyochestrator run-all .github/workflows          # default directory
+rustyochestrator run-all ./pipelines                # any folder
+rustyochestrator run-all examples --concurrency 2   # limit workers per workflow
+```
+
+Example output with two workflows running simultaneously:
+
+```
+INFO  running workflows simultaneously count=2 dir=.github/workflows
+INFO  loaded workflow=ci tasks=7
+INFO  loaded workflow=release tasks=7
+[ci] [INFO] Starting task: lint__cargo_fmt___check
+[release] [INFO] Starting task: build__Install_cross_...
+[ci]   [lint__cargo_fmt___check] ...
+[release]   [build__Install_cross_...|err] Compiling libc v0.2.183
+[ci] [INFO] Completed task: lint__cargo_fmt___check
+[release] [INFO] Completed task: build__Install_cross_...
+```
+
+- All pipelines are validated before any execution starts — parse errors surface immediately
+- Each workflow runs its own independent DAG scheduler with its own cache
+- Exit code is non-zero if any workflow fails; the failing workflow name is reported
+- Works with both native pipeline format and GitHub Actions format files in the same directory
 
 ---
 
@@ -491,7 +554,6 @@ rustyochestrator status
 ```
 
 ---
-
 
 ## Caching
 
