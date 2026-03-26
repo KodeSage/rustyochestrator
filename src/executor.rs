@@ -9,9 +9,10 @@ const MAX_RETRIES: u32 = 2;
 
 /// Execute a task with up to MAX_RETRIES retries. Returns `true` on success.
 /// `prefix` is prepended to every log line (e.g. `"[ci] "` for workflow isolation).
-pub async fn execute_task(task: &Task, prefix: &str) -> Result<bool> {
+/// `quiet` suppresses all stdout/stderr output (used when the TUI dashboard is active).
+pub async fn execute_task(task: &Task, prefix: &str, quiet: bool) -> Result<bool> {
     for attempt in 1..=(MAX_RETRIES + 1) {
-        if attempt > 1 {
+        if attempt > 1 && !quiet {
             println!(
                 "{}[RETRY] Attempt {}/{} for task '{}'",
                 prefix,
@@ -21,26 +22,32 @@ pub async fn execute_task(task: &Task, prefix: &str) -> Result<bool> {
             );
         }
 
-        match run_command(&task.id, &task.command, prefix).await {
+        match run_command(&task.id, &task.command, prefix, quiet).await {
             Ok(true) => return Ok(true),
 
             Ok(false) if attempt <= MAX_RETRIES => {
-                println!("{}[WARN] Task '{}' failed, retrying…", prefix, task.id);
+                if !quiet {
+                    println!("{}[WARN] Task '{}' failed, retrying…", prefix, task.id);
+                }
                 continue;
             }
             Ok(false) => {
-                println!(
-                    "{}[FAILED] Task '{}' failed after {} attempt(s)",
-                    prefix, task.id, attempt
-                );
+                if !quiet {
+                    println!(
+                        "{}[FAILED] Task '{}' failed after {} attempt(s)",
+                        prefix, task.id, attempt
+                    );
+                }
                 return Ok(false);
             }
 
             Err(e) if attempt <= MAX_RETRIES => {
-                println!(
-                    "{}[WARN] Task '{}' error: {} – retrying…",
-                    prefix, task.id, e
-                );
+                if !quiet {
+                    println!(
+                        "{}[WARN] Task '{}' error: {} – retrying…",
+                        prefix, task.id, e
+                    );
+                }
                 continue;
             }
             Err(e) => return Err(e),
@@ -51,8 +58,10 @@ pub async fn execute_task(task: &Task, prefix: &str) -> Result<bool> {
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
-async fn run_command(task_id: &str, command: &str, prefix: &str) -> Result<bool> {
-    println!("{}[INFO] Starting task: {}", prefix, task_id);
+async fn run_command(task_id: &str, command: &str, prefix: &str, quiet: bool) -> Result<bool> {
+    if !quiet {
+        println!("{}[INFO] Starting task: {}", prefix, task_id);
+    }
     tracing::info!(task = task_id, "starting");
 
     let mut child = Command::new("sh")
@@ -76,14 +85,18 @@ async fn run_command(task_id: &str, command: &str, prefix: &str) -> Result<bool>
     let h_out = tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            println!("{}  [{}] {}", pfx_out, tid_out, line);
+            if !quiet {
+                println!("{}  [{}] {}", pfx_out, tid_out, line);
+            }
         }
     });
 
     let h_err = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            eprintln!("{}  [{}|err] {}", pfx_err, tid_err, line);
+            if !quiet {
+                eprintln!("{}  [{}|err] {}", pfx_err, tid_err, line);
+            }
         }
     });
 
@@ -92,14 +105,18 @@ async fn run_command(task_id: &str, command: &str, prefix: &str) -> Result<bool>
     let status = child.wait().await.map_err(RustyError::Io)?;
 
     if status.success() {
-        println!("{}[INFO] Completed task: {}", prefix, task_id);
+        if !quiet {
+            println!("{}[INFO] Completed task: {}", prefix, task_id);
+        }
         tracing::info!(task = task_id, "completed");
         Ok(true)
     } else {
-        println!(
-            "{}[FAIL] Task '{}' exited with status {}",
-            prefix, task_id, status
-        );
+        if !quiet {
+            println!(
+                "{}[FAIL] Task '{}' exited with status {}",
+                prefix, task_id, status
+            );
+        }
         tracing::error!(task = task_id, %status, "failed");
         Ok(false)
     }

@@ -1,27 +1,39 @@
 {
   "entries": {
-    "test__Smoke_test_pipeline_runner": {
-      "hash": "4b44656d5ffad572733be73742f31e69ed091b4cf476e12f9ae966b75a8f7a08",
+    "integration__Run_again_(all_tasks_should_be_cache_hits)": {
+      "hash": "7881b8adf00bb57bb302426c9d7198a60d56c0c5376146d3913dddaf5b8dcc5d",
       "success": true
     },
-    "lint__Check_formatting": {
+    "test__cargo_test": {
+      "hash": "6243253d6c276de98b6e2e1b0cfd3f32d27fdc29a5e4a75beba65d37293b09f0",
+      "success": true
+    },
+    "release__Generate_combined_checksums_file": {
+      "hash": "93b6f36f176d51ffbc381a6aed997a2f1683a177fa4a7e985e195a01e48e7e69",
+      "success": true
+    },
+    "lint__cargo_clippy": {
+      "hash": "a2ff494015f6e069747cd8e88661eb94cf9fa1a0a399dd2a94d5170dfad9194d",
+      "success": true
+    },
+    "integration__Run_GitHub_Actions_example_(via_rustyochestrator)": {
+      "hash": "89012cbe5c07a885e93fa937d07a2e2eed92d39eaf933802bf9427c67a2fc90f",
+      "success": true
+    },
+    "lint__cargo_fmt___check": {
       "hash": "810e75f0d3dee10e68076ea4a252c5cad284ef355c74785fc33f0cd493f3b98e",
       "success": true
     },
-    "test__Unit_tests": {
-      "hash": "9605824d6eaa9990d8931e178fb66ec90e30ae6de4a87b17935b2bff268989a2",
+    "build__cargo_build___release": {
+      "hash": "bf8349940c10394bcb302a6b5e66cc75c3d6475293998d4441f759e710a1af85",
       "success": true
     },
-    "build__Build_debug": {
-      "hash": "9dac8e2d1ce22ebcd1ae8f87f75ca893166bcd977ac1867b23c0cc1a51c9f288",
+    "integration__Run_native_pipeline": {
+      "hash": "54d5420dd872b79c17c77f49f80d03aa7fc2ef33b953c782533b7a66a075b8cd",
       "success": true
     },
-    "lint__Clippy": {
-      "hash": "8e164d8bf4c84172ee870ff2b45580a0090135bd0ef35842caf1b79423fdbdd6",
-      "success": true
-    },
-    "build__Build_release": {
-      "hash": "d6616ba38f061cd343510a466fda9688bd2b5a1426774a6649e27e3bc95a75ff",
+    "build__Install_cross_(for_cross_compilation_targets)": {
+      "hash": "1d842a165b2678b89353210f4c2864756b937bda2507da6f8ef5704ff96ee639",
       "success": true
     }
   }

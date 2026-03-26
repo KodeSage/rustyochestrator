@@ -27,7 +27,7 @@ pub enum TaskState {
 
 // ── Pipeline ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Pipeline {
     pub tasks: Vec<Task>,
 }

@@ -1,7 +1,7 @@
 # 🦀 Rusty Orchestrator
+
 [![crates.io](https://img.shields.io/crates/v/rustyochestrator.svg)](https://crates.io/crates/rustyochestrator)
 [![license](https://img.shields.io/crates/l/rustyochestrator.svg)](LICENSE)
-
 
 A high-performance CI/CD pipeline runner written in Rust.
 
@@ -73,7 +73,7 @@ rustyochestrator run pipeline.yaml
 ```yaml
 tasks:
   - id: install
-    command: "npm install"   # or pip install, cargo fetch, etc.
+    command: "npm install" # or pip install, cargo fetch, etc.
 
   - id: build
     command: "npm run build"
@@ -260,6 +260,7 @@ Any command that runs in `sh -c` works — shell scripts, Python scripts, Makefi
 - **Content-addressable cache** — each task is hashed by its command + dependency IDs; unchanged tasks are skipped instantly
 - **GitHub Actions compatibility** — parse and run `.github/workflows/*.yml` files directly
 - **Parallel workflow execution** — `run-all` runs every workflow file in a directory simultaneously, with each workflow's output prefixed by its name
+- **Live TUI dashboard** — colour-coded per-task progress view with spinners, elapsed time, and a summary bar; auto-detects TTY and falls back to plain log output in CI
 - **Retry logic** — failed tasks are retried up to 2 times before being marked failed
 - **Failure propagation** — when a task fails its entire transitive dependent subtree is cancelled immediately
 - **Real-time output** — stdout and stderr from every task are streamed line-by-line as they run
@@ -349,15 +350,36 @@ Mapping rules:
 ### `run` — execute a pipeline
 
 ```bash
-rustyochestrator run <pipeline.yaml> [--concurrency <N>]
+rustyochestrator run <pipeline.yaml> [--concurrency <N>] [--no-tui]
 ```
 
 ```bash
 rustyochestrator run pipeline.yaml
 rustyochestrator run pipeline.yaml --concurrency 4
 rustyochestrator run .github/workflows/ci.yml      # GitHub Actions format
+rustyochestrator run pipeline.yaml --no-tui        # force plain log output
 RUST_LOG=debug rustyochestrator run pipeline.yaml  # verbose logging
 ```
+
+When stdout is a TTY the TUI dashboard is shown automatically:
+
+```
+rustyochestrator — pipeline.yaml   elapsed 00:00:12
+
+  ✓ toolchain                        0.8s   [cached]
+  ✓ fmt                              1.2s
+  ⠸ clippy                           12s    [running]
+  ⠸ build-debug                      9s     [running]
+  ◌ test                                    [waiting]
+  ◌ build-release                           [waiting]
+  ◌ smoke-test                              [waiting]
+
+  ████████░░░░░░░░░░░░░░░░  2/7  2 done  2 running  3 pending  0 failed
+```
+
+Use `--no-tui` to force plain scrolling output (e.g. when piping to a file or running in CI without a pseudo-TTY).
+
+In non-TTY environments (CI, `| tee`, `> file`) the dashboard is suppressed automatically and the plain log format is used instead.
 
 ---
 
@@ -532,7 +554,6 @@ rustyochestrator status
 ```
 
 ---
-
 
 ## Caching
 

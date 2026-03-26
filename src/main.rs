@@ -7,32 +7,44 @@ mod github;
 mod pipeline;
 mod reporter;
 mod scheduler;
+mod tui;
 
 use clap::Parser;
 use cli::{CacheCommands, Cli, Commands};
 use pipeline::Pipeline;
 use scheduler::Scheduler;
+use std::io::IsTerminal;
+use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Parse CLI first so we can detect TUI mode before initialising tracing.
+    let cli = Cli::parse();
+
+    // In TUI mode suppress info-level tracing so it doesn't bleed into the display.
+    let tui_active = match &cli.command {
+        Commands::Run { no_tui, .. } => !no_tui && std::io::stdout().is_terminal(),
+        Commands::RunAll { no_tui, .. } => !no_tui && std::io::stdout().is_terminal(),
+        _ => false,
+    };
+    let default_level = if tui_active { "warn" } else { "info" };
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
         .without_time()
         .init();
 
-    let cli = Cli::parse();
-
     match cli.command {
         Commands::Run {
             pipeline: path,
             concurrency,
+            no_tui,
         } => {
             let pipeline = load_pipeline(&path);
             let workers = concurrency.unwrap_or_else(num_cpus::get);
-            tracing::info!(workers, tasks = pipeline.tasks.len(), "pipeline starting");
 
             // Derive a pipeline name from the file path
             let name = std::path::Path::new(&path)
@@ -41,18 +53,38 @@ async fn main() {
                 .unwrap_or("pipeline")
                 .to_string();
 
-            // Build scheduler, attach reporter if connected to a dashboard
-            let mut scheduler = Scheduler::new(pipeline, workers).with_name(name);
+            let use_tui = !no_tui && std::io::stdout().is_terminal();
+
+            if !use_tui {
+                tracing::info!(workers, tasks = pipeline.tasks.len(), "pipeline starting");
+            }
+
+            // Build scheduler
+            let mut scheduler = Scheduler::new(pipeline.clone(), workers).with_name(name.clone());
+
             if let Some(cfg) = config::load() {
                 let r = reporter::Reporter::new(cfg.dashboard_url.clone(), cfg.token.clone());
                 scheduler = scheduler.with_reporter(r);
                 tracing::info!("reporting to dashboard: {}", cfg.dashboard_url);
             }
 
+            if use_tui {
+                // Tasks displayed in topological order so the layout matches execution flow.
+                let task_ids: Vec<String> = pipeline.levels().into_iter().flatten().collect();
+                let dashboard = Arc::new(tui::Dashboard::new(&name, &task_ids));
+                scheduler = scheduler.with_dashboard(dashboard);
+            }
+
             match scheduler.run().await {
-                Ok(true) => tracing::info!("pipeline completed successfully"),
+                Ok(true) => {
+                    if !use_tui {
+                        tracing::info!("pipeline completed successfully");
+                    }
+                }
                 Ok(false) => {
-                    eprintln!("error: pipeline finished with failures");
+                    if !use_tui {
+                        eprintln!("error: pipeline finished with failures");
+                    }
                     std::process::exit(1);
                 }
                 Err(e) => die(&e.to_string()),
@@ -209,7 +241,11 @@ async fn main() {
             }
         },
 
-        Commands::RunAll { dir, concurrency } => {
+        Commands::RunAll {
+            dir,
+            concurrency,
+            no_tui,
+        } => {
             let workers = concurrency.unwrap_or_else(num_cpus::get);
 
             // Collect all .yml / .yaml files in the directory
@@ -260,15 +296,24 @@ async fn main() {
                 })
                 .collect();
 
+            let use_tui = !no_tui && std::io::stdout().is_terminal();
+
             // Spawn each workflow as a concurrent tokio task
             let mut handles = Vec::new();
             for (name, pipeline) in workflows {
                 let cfg = reporter_cfg.clone();
                 let handle = tokio::spawn(async move {
-                    let mut scheduler = Scheduler::new(pipeline, workers).with_name(name.clone());
+                    let mut scheduler =
+                        Scheduler::new(pipeline.clone(), workers).with_name(name.clone());
                     if let Some(c) = cfg {
                         let r = reporter::Reporter::new(c.dashboard_url.clone(), c.token.clone());
                         scheduler = scheduler.with_reporter(r);
+                    }
+                    if use_tui {
+                        let task_ids: Vec<String> =
+                            pipeline.levels().into_iter().flatten().collect();
+                        let dashboard = Arc::new(tui::Dashboard::new(&name, &task_ids));
+                        scheduler = scheduler.with_dashboard(dashboard);
                     }
                     let result = scheduler.run().await;
                     (name, result)

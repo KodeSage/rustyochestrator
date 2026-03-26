@@ -10,6 +10,7 @@ use crate::errors::Result;
 use crate::executor::execute_task;
 use crate::pipeline::{Pipeline, Task, TaskState};
 use crate::reporter::{Event, PipelineCompletedArgs, Reporter};
+use crate::tui::Dashboard;
 
 // ── Channel message ───────────────────────────────────────────────────────────
 
@@ -27,6 +28,7 @@ pub struct Scheduler {
     pipeline: Pipeline,
     concurrency: usize,
     reporter: Option<Reporter>,
+    dashboard: Option<Arc<Dashboard>>,
     pipeline_id: String,
     pipeline_name: String,
 }
@@ -44,6 +46,7 @@ impl Scheduler {
             pipeline,
             concurrency,
             reporter: None,
+            dashboard: None,
             pipeline_id: id,
             pipeline_name: name,
         }
@@ -57,6 +60,11 @@ impl Scheduler {
     pub fn with_name(mut self, name: String) -> Self {
         self.pipeline_name = name.clone();
         self.pipeline_id = format!("{}-{:x}", name, rand_u32());
+        self
+    }
+
+    pub fn with_dashboard(mut self, dashboard: Arc<Dashboard>) -> Self {
+        self.dashboard = Some(dashboard);
         self
     }
 
@@ -111,16 +119,21 @@ impl Scheduler {
             .collect();
 
         let prefix = format!("[{}] ", self.pipeline_name);
+        let quiet = self.dashboard.is_some();
 
         for id in boot {
             states.insert(id.clone(), TaskState::Running);
             running += 1;
+            if let Some(ref d) = self.dashboard {
+                d.task_started(&id);
+            }
             spawn_task(
                 tasks_map[&id].clone(),
                 tx.clone(),
                 sem.clone(),
                 cache.clone(),
                 prefix.clone(),
+                quiet,
             );
         }
 
@@ -136,7 +149,7 @@ impl Scheduler {
             };
             running -= 1;
 
-            // Report task completion to dashboard
+            // Report task completion to remote dashboard
             if let Some(ref r) = self.reporter {
                 r.send(Event::task_completed(
                     &self.pipeline_id,
@@ -150,19 +163,31 @@ impl Scheduler {
             let new_state = if outcome.skipped {
                 info!("task '{}' skipped (cache hit)", outcome.id);
                 cached_tasks += 1;
+                if let Some(ref d) = self.dashboard {
+                    d.task_completed(&outcome.id, outcome.duration_ms, true);
+                }
                 TaskState::Skipped
             } else if outcome.success {
                 info!("task '{}' succeeded", outcome.id);
+                if let Some(ref d) = self.dashboard {
+                    d.task_completed(&outcome.id, outcome.duration_ms, false);
+                }
                 TaskState::Success
             } else {
                 error!("task '{}' failed", outcome.id);
                 failed_tasks += 1;
+                if let Some(ref d) = self.dashboard {
+                    d.task_failed(&outcome.id, outcome.duration_ms);
+                }
                 let deps = transitive_dependents(&outcome.id, &states, &tasks_map);
                 for dep_id in deps {
                     warn!(
                         "[SKIP] '{}' skipped because '{}' failed",
                         dep_id, outcome.id
                     );
+                    if let Some(ref d) = self.dashboard {
+                        d.task_cancelled(&dep_id);
+                    }
                     states.insert(dep_id, TaskState::Failed);
                 }
                 TaskState::Failed
@@ -173,12 +198,16 @@ impl Scheduler {
             for id in ready {
                 states.insert(id.clone(), TaskState::Running);
                 running += 1;
+                if let Some(ref d) = self.dashboard {
+                    d.task_started(&id);
+                }
                 spawn_task(
                     tasks_map[&id].clone(),
                     tx.clone(),
                     sem.clone(),
                     cache.clone(),
                     prefix.clone(),
+                    quiet,
                 );
             }
         }
@@ -193,6 +222,11 @@ impl Scheduler {
 
         if n_failed > 0 {
             error!("{} task(s) failed", n_failed);
+        }
+
+        // Freeze the TUI dashboard
+        if let Some(ref d) = self.dashboard {
+            d.finish(pipeline_success);
         }
 
         // Emit pipeline_completed
@@ -286,6 +320,7 @@ fn spawn_task(
     sem: Arc<Semaphore>,
     cache: Arc<Mutex<Cache>>,
     prefix: String,
+    quiet: bool,
 ) {
     tokio::spawn(async move {
         let _permit = sem.acquire().await.expect("semaphore closed");
@@ -299,7 +334,9 @@ fn spawn_task(
         };
 
         if hit {
-            println!("{}[CACHE HIT] Skipping task: {}", prefix, task.id);
+            if !quiet {
+                println!("{}[CACHE HIT] Skipping task: {}", prefix, task.id);
+            }
             let _ = tx
                 .send(TaskOutcome {
                     id: task.id,
@@ -312,10 +349,12 @@ fn spawn_task(
         }
 
         let t0 = Instant::now();
-        let success = execute_task(&task, &prefix).await.unwrap_or_else(|e| {
-            error!("task '{}' I/O error: {}", task.id, e);
-            false
-        });
+        let success = execute_task(&task, &prefix, quiet)
+            .await
+            .unwrap_or_else(|e| {
+                error!("task '{}' I/O error: {}", task.id, e);
+                false
+            });
         let duration_ms = t0.elapsed().as_millis() as u64;
 
         if success && let Some(hash) = task.hash.clone() {

@@ -17,6 +17,9 @@ pub enum Commands {
         /// Maximum concurrent tasks [default: num_cpus]
         #[arg(short, long)]
         concurrency: Option<usize>,
+        /// Disable the TUI dashboard and use plain log output
+        #[arg(long)]
+        no_tui: bool,
     },
 
     /// Validate a pipeline without running it
@@ -71,6 +74,9 @@ pub enum Commands {
         /// Maximum concurrent tasks per workflow [default: num_cpus]
         #[arg(short, long)]
         concurrency: Option<usize>,
+        /// Disable the TUI dashboard and use plain log output
+        #[arg(long)]
+        no_tui: bool,
     },
 }
 

@@ -53,7 +53,22 @@ pub fn parse_github_workflow(content: &str) -> Result<Pipeline> {
 
         for (idx, step) in job.steps.iter().enumerate() {
             let run_cmd = match &step.run {
-                Some(r) => r.trim().to_string(),
+                Some(r) => {
+                    let cmd = r.trim().to_string();
+                    // Skip steps whose command contains unresolvable GitHub Actions
+                    // expressions (${{ ... }}) — these require a real Actions runner
+                    // (e.g. matrix variables, secrets, context references).
+                    if cmd.contains("${{") {
+                        let name = step.name.as_deref().unwrap_or("unnamed step");
+                        tracing::debug!(
+                            job = job_name.as_str(),
+                            step = name,
+                            "skipping step — contains unresolvable ${{{{...}}}} expression"
+                        );
+                        continue;
+                    }
+                    cmd
+                }
                 None => continue, // `uses:` steps are skipped
             };
 
