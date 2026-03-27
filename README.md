@@ -1,19 +1,96 @@
-# 🦀 Rusty Orchestrator
+# Rusty Orchestrator
 
 [![crates.io](https://img.shields.io/crates/v/rustyochestrator.svg)](https://crates.io/crates/rustyochestrator)
+[![CI](https://github.com/KodeSage/rustyochestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/KodeSage/rustyochestrator/actions)
 [![license](https://img.shields.io/crates/l/rustyochestrator.svg)](LICENSE)
 
-A high-performance CI/CD pipeline runner written in Rust.
+A high-performance, open-source CI/CD pipeline runner written in Rust.
 
-Executes task pipelines defined in YAML, runs independent tasks in parallel, skips unchanged work via content-addressable caching, and understands GitHub Actions workflow syntax natively.
+Define your build pipeline in YAML. Rusty Orchestrator runs independent tasks in parallel, skips unchanged work via content-addressable caching, and understands GitHub Actions workflow syntax natively — all from your terminal, with no external service required.
+
+---
+
+## Table of Contents
+
+- [Rusty Orchestrator](#rusty-orchestrator)
+  - [Table of Contents](#table-of-contents)
+  - [Why Rusty Orchestrator?](#why-rusty-orchestrator)
+  - [How it works](#how-it-works)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+    - [Option 1 — cargo install (recommended)](#option-1--cargo-install-recommended)
+    - [Option 2 — pre-built binary](#option-2--pre-built-binary)
+    - [Option 3 — one-liner installer](#option-3--one-liner-installer)
+    - [Option 4 — build from source](#option-4--build-from-source)
+  - [Quick start](#quick-start)
+  - [CLI reference](#cli-reference)
+    - [`run` — execute a pipeline](#run--execute-a-pipeline)
+    - [`run-all` — run all workflows in a directory](#run-all--run-all-workflows-in-a-directory)
+    - [`validate` — check without running](#validate--check-without-running)
+    - [`list` — show execution order](#list--show-execution-order)
+    - [`graph` — ASCII dependency graph](#graph--ascii-dependency-graph)
+    - [`cache show` — inspect the cache](#cache-show--inspect-the-cache)
+    - [`cache clean` — clear the cache](#cache-clean--clear-the-cache)
+    - [`init` — scaffold a new pipeline](#init--scaffold-a-new-pipeline)
+    - [`connect` — link to dashhy dashboard](#connect--link-to-dashhy-dashboard)
+    - [`disconnect` — remove dashboard connection](#disconnect--remove-dashboard-connection)
+    - [`status` — show connection status](#status--show-connection-status)
+  - [Pipeline format](#pipeline-format)
+    - [Task fields](#task-fields)
+    - [Environment variables \& secrets](#environment-variables--secrets)
+    - [GitHub Actions format](#github-actions-format)
+  - [Language examples](#language-examples)
+    - [Node.js / npm](#nodejs--npm)
+    - [Python](#python)
+    - [Terraform / infrastructure](#terraform--infrastructure)
+    - [Mixed stack](#mixed-stack)
+  - [Caching](#caching)
+  - [Features](#features)
+  - [Contributing](#contributing)
+  - [License](#license)
+
+---
+
+## Why Rusty Orchestrator?
+
+Most CI tools require you to push code before you can see whether your pipeline works. Rusty Orchestrator runs the same pipeline locally — including your existing GitHub Actions workflows — so you can iterate fast before ever opening a pull request.
+
+| Problem | How Rusty Orchestrator solves it |
+| --- | --- |
+| "My CI is slow" | Parallel execution + smart caching skips unchanged tasks instantly |
+| "I have to push to test my workflow" | Run `.github/workflows/*.yml` files locally with one command |
+| "Debugging CI failures is painful" | Live TUI with per-task progress, output streaming, and debug logging |
+| "I don't want another SaaS dependency" | Fully offline — no account, no network, no dashboard required |
+
+---
+
+## How it works
+
+```
+pipeline.yaml  ──►  Parser  ──►  DAG Resolver  ──►  Scheduler  ──►  Worker Pool
+                                      │                                    │
+                                 Cycle check                    Tokio async tasks
+                                 Dep ordering                   Parallel execution
+                                                                Content cache check
+```
+
+1. **Parse** — Rusty reads your YAML (native format or GitHub Actions) and builds a list of tasks with dependencies.
+2. **Resolve** — A directed acyclic graph (DAG) is constructed. Circular dependencies are caught before anything runs.
+3. **Schedule** — Tasks are grouped into parallel stages. A task starts as soon as all its dependencies succeed.
+4. **Cache** — Each task is identified by a SHA-256 hash of its command, dependency IDs, and env values. If the hash matches a previous successful run, the task is skipped.
+5. **Execute** — Tasks run as shell subprocesses. Stdout and stderr are streamed live to the TUI or plain log output.
+
+---
+
+## Prerequisites
+
+- **Rust 1.70+** — only needed if installing via `cargo install` or building from source. Not required for pre-built binaries.
 
 ---
 
 ## Installation
 
 ### Option 1 — cargo install (recommended)
-
-Requires Rust 1.70+. Installs the `rustyochestrator` binary directly from [crates.io](https://crates.io/crates/rustyochestrator):
 
 ```bash
 cargo install rustyochestrator
@@ -57,122 +134,378 @@ cargo build --release
 
 ## Quick start
 
-### No folder setup needed
-
-`rustyochestrator init` creates the pipeline file in your current directory — no manual folder creation required:
+**1. Scaffold a pipeline in your project:**
 
 ```bash
 rustyochestrator init
-rustyochestrator run pipeline.yaml
 ```
 
-### Dependencies are not auto-installed
+This creates a `pipeline.yaml` in the current directory. No folder setup required.
 
-`rustyochestrator` only runs the commands you define. If your project needs packages installed, declare it as a task:
+**2. Edit the generated file** to match your project's build steps:
 
 ```yaml
 tasks:
   - id: install
-    command: "npm install" # or pip install, cargo fetch, etc.
+    command: "npm install"
+
+  - id: lint
+    command: "npm run lint"
+    depends_on: [install]
+
+  - id: test
+    command: "npm test"
+    depends_on: [install]
 
   - id: build
     command: "npm run build"
-    depends_on: [install]
+    depends_on: [lint, test]
 ```
 
----
-
-## Local usage
-
-Everything below works offline with no dashboard, no account, and no network access required.
-
-### Run a pipeline
+**3. Run it:**
 
 ```bash
 rustyochestrator run pipeline.yaml
 ```
 
-Run a second time — every unchanged task is skipped instantly from cache:
+**4. Run it again** — unchanged tasks are skipped from cache:
 
 ```bash
 rustyochestrator run pipeline.yaml
-# [CACHE HIT] Skipping task: build
+# [CACHE HIT] Skipping task: install
+# [CACHE HIT] Skipping task: lint
 # [CACHE HIT] Skipping task: test
-# [CACHE HIT] Skipping task: deploy
+# [CACHE HIT] Skipping task: build
 ```
 
-### All CLI commands
+> **Note:** Rusty Orchestrator only runs commands you define. If your project needs packages installed, declare it as a task (as shown above) — nothing is auto-installed.
+
+---
+
+## CLI reference
+
+### `run` — execute a pipeline
 
 ```bash
-# Execute a pipeline
+rustyochestrator run <pipeline.yaml> [--concurrency <N>] [--no-tui]
+```
+
+```bash
 rustyochestrator run pipeline.yaml
-rustyochestrator run pipeline.yaml --concurrency 4   # limit worker count
-rustyochestrator run .github/workflows/ci.yml        # GitHub Actions format
+rustyochestrator run pipeline.yaml --concurrency 4       # limit worker count
+rustyochestrator run .github/workflows/ci.yml            # GitHub Actions format
+rustyochestrator run pipeline.yaml --no-tui              # force plain log output
+RUST_LOG=debug rustyochestrator run pipeline.yaml        # verbose debug logging
+```
 
-# Validate without running
-rustyochestrator validate pipeline.yaml
+When stdout is a TTY, the live TUI dashboard is shown automatically:
 
-# Show execution order by stage
-rustyochestrator list pipeline.yaml
+```
+rustyochestrator — pipeline.yaml   elapsed 00:00:12
 
-# Print the dependency graph
-rustyochestrator graph pipeline.yaml
+  ✓ toolchain                        0.8s   [cached]
+  ✓ fmt                              1.2s
+  ⠸ clippy                           12s    [running]
+  ⠸ build-debug                      9s     [running]
+  ◌ test                                    [waiting]
+  ◌ build-release                           [waiting]
+  ◌ smoke-test                              [waiting]
 
-# Inspect the local cache
-rustyochestrator cache show
+  ████████░░░░░░░░░░░░░░░░  2/7  2 done  2 running  3 pending  0 failed
+```
 
-# Clear the local cache (forces full re-run next time)
-rustyochestrator cache clean
+In non-TTY environments (CI runners, `| tee`, `> file`) the TUI is suppressed automatically and plain log output is used. Use `--no-tui` to force plain output locally.
 
-# Scaffold a new pipeline.yaml
-rustyochestrator init
-rustyochestrator init my-pipeline.yaml   # custom filename
+---
 
-# Run all workflows in a directory simultaneously
+### `run-all` — run all workflows in a directory
+
+Discovers every `.yml` and `.yaml` file in the given directory and runs them all concurrently — just like GitHub Actions fires multiple workflow files in parallel. Each workflow's output is prefixed with its filename.
+
+```bash
+rustyochestrator run-all <dir> [--concurrency <N>]
+```
+
+```bash
 rustyochestrator run-all .github/workflows
-rustyochestrator run-all ./my-pipelines --concurrency 4
+rustyochestrator run-all ./my-pipelines
+rustyochestrator run-all examples --concurrency 2
+```
 
-# Debug logging
+Example output with two workflows running simultaneously:
+
+```
+INFO  running workflows simultaneously count=2 dir=.github/workflows
+[ci]      Starting task: lint__cargo_fmt___check
+[release] Starting task: build__Install_cross_...
+[ci]      Completed task: lint__cargo_fmt___check
+[release] Completed task: build__Install_cross_...
+```
+
+- All pipelines are validated before any execution starts — parse errors surface immediately
+- Each workflow runs its own independent DAG scheduler with its own cache
+- Exit code is non-zero if any workflow fails
+- Works with both native pipeline format and GitHub Actions format files in the same directory
+
+---
+
+### `validate` — check without running
+
+Parses the file, resolves dependencies, checks for cycles. Exits non-zero on any error.
+
+```bash
+rustyochestrator validate pipeline.yaml
+```
+
+```
+  3 tasks
+  [ok] build
+  [ok] test  (needs: build)
+  [ok] deploy  (needs: test)
+
+pipeline 'pipeline.yaml' is valid.
+```
+
+---
+
+### `list` — show execution order
+
+Groups tasks into parallel stages so you can see exactly what runs when.
+
+```bash
+rustyochestrator list pipeline.yaml
+```
+
+```
+Execution order for 'pipeline.yaml':
+
+  Stage 0 — 2 task(s) run in parallel:
+    1. toolchain
+    2. fmt
+
+  Stage 1 — 2 task(s) run in parallel:
+    3. clippy       (after: fmt)
+    4. build-debug  (after: fmt)
+
+  Stage 2 — 1 task(s) run in parallel:
+    5. test  (after: build-debug, clippy)
+```
+
+---
+
+### `graph` — ASCII dependency graph
+
+```bash
+rustyochestrator graph pipeline.yaml
+```
+
+```
+Dependency graph for 'pipeline.yaml':
+
+  Stage 0  (no deps):
+    toolchain
+    fmt
+
+  Stage 1:
+    clippy      ◄── [fmt]
+    build-debug ◄── [fmt]
+
+  Stage 2:
+    test  ◄── [build-debug, clippy]
+```
+
+---
+
+### `cache show` — inspect the cache
+
+```bash
+rustyochestrator cache show
+```
+
+```
+  task       status     hash
+  ─────────────────────────────────────────
+  build      ok         b3d10802f5217f42
+  clippy     ok         9eeaf9f8bc055df3
+  fmt        ok         810e75f0d3dee10e
+  test       ok         257080d6e3e17348
+
+  4 cached task(s).
+```
+
+---
+
+### `cache clean` — clear the cache
+
+Forces every task to re-run on the next `run`.
+
+```bash
+rustyochestrator cache clean
+# Cache cleared.
+```
+
+---
+
+### `init` — scaffold a new pipeline
+
+Creates a starter `pipeline.yaml` (or a custom filename) in the current directory.
+
+```bash
+rustyochestrator init                    # creates pipeline.yaml
+rustyochestrator init my-pipeline.yaml  # custom filename
+```
+
+---
+
+### `connect` — link to dashhy dashboard
+
+Stream live pipeline events to a hosted monitoring UI.
+
+```bash
+rustyochestrator connect --token <jwt> --url <dashboard-url>
+```
+
+Saves the connection to `~/.rustyochestrator/connect.json`. All subsequent `run` commands will report live to the dashboard.
+
+### `disconnect` — remove dashboard connection
+
+```bash
+rustyochestrator disconnect
+```
+
+### `status` — show connection status
+
+```bash
+rustyochestrator status
+# Connected
+#   Dashboard : https://your-dashhy.vercel.app
+#   User      : @your-github-username
+```
+
+---
+
+## Pipeline format
+
+### Task fields
+
+```yaml
+tasks:
+  - id: build
+    command: "cargo build"
+
+  - id: lint
+    command: "cargo clippy -- -D warnings"
+    depends_on: [build]
+
+  - id: test
+    command: "cargo test"
+    depends_on: [build]
+
+  - id: package
+    command: "tar czf dist.tar.gz target/release/myapp"
+    depends_on: [lint, test]
+```
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `id` | yes | Unique identifier for the task |
+| `command` | yes | Shell command to run (executed via `sh -c`) |
+| `depends_on` | no | List of task IDs that must succeed before this task starts |
+| `env` | no | Map of environment variables scoped to this task |
+
+Multi-line commands work with YAML block scalars:
+
+```yaml
+tasks:
+  - id: report
+    command: |
+      echo "=== build info ==="
+      rustc --version
+      du -sh target/release/myapp
+    depends_on: [build]
+```
+
+---
+
+### Environment variables & secrets
+
+Declare `env:` at the pipeline level (applied to every task) or at the task level (overrides the pipeline-level value for that task only).
+
+```yaml
+env:
+  NODE_ENV: production
+  API_URL: https://api.example.com
+
+tasks:
+  - id: build
+    command: "npm run build"
+
+  - id: deploy
+    command: "npm run deploy"
+    env:
+      API_URL: https://staging.example.com  # overrides pipeline-level value
+      API_KEY: "${{ secrets.DEPLOY_KEY }}"  # read from shell environment at runtime
+```
+
+**Secret references** use `${{ secrets.NAME }}` syntax. At runtime, the value is read from the current shell environment and passed to the task process — it is never written to disk.
+
+**Pre-flight validation:** all secrets are resolved before any task starts. If a referenced secret is missing, the run aborts immediately:
+
+```
+Error: secret 'DEPLOY_KEY' referenced by env key 'API_KEY' in task 'deploy' is not set in the environment
+```
+
+**Automatic redaction:** debug logging (`RUST_LOG=debug`) prints env keys but redacts values whose key contains `SECRET`, `TOKEN`, `KEY`, or `PASSWORD` (case-insensitive):
+
+```bash
 RUST_LOG=debug rustyochestrator run pipeline.yaml
+# DEBUG task=deploy key=API_URL value=https://staging.example.com
+# DEBUG task=deploy key=API_KEY value=***
 ```
 
-### Developing from source
-
-Clone the repo and use `cargo run` in place of the installed binary:
-
-```bash
-git clone https://github.com/yourname/rusty
-cd rusty
-
-cargo run -- run examples/pipeline.yaml
-cargo run -- run examples/pipeline.yaml --concurrency 2
-cargo run -- validate examples/pipeline.yaml
-cargo run -- list examples/pipeline.yaml
-cargo run -- graph examples/pipeline.yaml
-cargo run -- cache show
-cargo run -- cache clean
-cargo run -- init
-cargo run -- run-all .github/workflows
-
-# Build and run the release binary directly
-cargo build --release
-./target/release/rustyochestrator run examples/pipeline.yaml
-```
+**Cache invalidation:** changing any env value (including secrets) invalidates the task's cache hash, forcing a re-run.
 
 ---
 
-### Manage the connection
+### GitHub Actions format
+
+Rusty Orchestrator can run GitHub Actions workflow files directly — useful for local testing before pushing:
+
+```yaml
+# .github/workflows/ci.yml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compile
+        run: cargo build --release
+
+  test:
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Unit tests
+        run: cargo test --all
+```
 
 ```bash
-rustyochestrator status       # show connected dashboard and user
-rustyochestrator disconnect   # remove connection
+rustyochestrator run .github/workflows/ci.yml
 ```
+
+**Mapping rules:**
+
+- Each `run:` step becomes one task
+- Steps within a job run sequentially
+- `needs:` wires the first step of a downstream job to the last step of each required job
+- `uses:` steps (third-party actions) are silently skipped
+- `env:` blocks at the workflow, job, and step levels are parsed and merged
+- `${{ secrets.NAME }}` references are forwarded; other `${{ }}` expressions are dropped (they require a real Actions runner)
 
 ---
 
-## Language support
+## Language examples
 
-rustyochestrator is **completely language-agnostic**. The `command` field runs anything your shell can execute.
+Rusty Orchestrator is **completely language-agnostic**. The `command` field runs anything your shell can execute.
 
 ### Node.js / npm
 
@@ -253,357 +586,13 @@ Any command that runs in `sh -c` works — shell scripts, Python scripts, Makefi
 
 ---
 
-## Features
-
-- **Parallel execution** — worker pool backed by Tokio; concurrency defaults to the number of logical CPUs
-- **DAG scheduling** — dependencies are resolved at runtime; tasks run as soon as their deps finish
-- **Content-addressable cache** — each task is hashed by its command + dependency IDs + env; unchanged tasks are skipped instantly
-- **GitHub Actions compatibility** — parse and run `.github/workflows/*.yml` files directly
-- **Parallel workflow execution** — `run-all` runs every workflow file in a directory simultaneously, with each workflow's output prefixed by its name
-- **Live TUI dashboard** — colour-coded per-task progress view with spinners, elapsed time, and a summary bar; auto-detects TTY and falls back to plain log output in CI
-- **Environment variables & secrets** — declare `env:` at pipeline or task level; reference shell secrets with `${{ secrets.NAME }}`; missing secrets abort before execution starts
-- **Retry logic** — failed tasks are retried up to 2 times before being marked failed
-- **Failure propagation** — when a task fails its entire transitive dependent subtree is cancelled immediately
-- **Real-time output** — stdout and stderr from every task are streamed line-by-line as they run
-- **Cycle detection** — circular dependencies are caught before execution starts
-- **Live dashboard** — optional dashhy integration streams pipeline events to a hosted monitoring UI
-
----
-
-## Pipeline format
-
-### Native YAML
-
-```yaml
-tasks:
-  - id: build
-    command: "cargo build"
-
-  - id: lint
-    command: "cargo clippy -- -D warnings"
-    depends_on: [build]
-
-  - id: test
-    command: "cargo test"
-    depends_on: [build]
-
-  - id: package
-    command: "tar czf dist.tar.gz target/release/myapp"
-    depends_on: [lint, test]
-```
-
-**Task fields:**
-
-| Field        | Required | Description                                         |
-| ------------ | -------- | --------------------------------------------------- |
-| `id`         | yes      | Unique identifier for the task                      |
-| `command`    | yes      | Shell command to run (executed via `sh -c`)         |
-| `depends_on` | no       | List of task IDs that must succeed first            |
-| `env`        | no       | Map of environment variables for this task          |
-
-Multi-line commands work with YAML block scalars:
-
-```yaml
-tasks:
-  - id: report
-    command: |
-      echo "=== build info ==="
-      rustc --version
-      du -sh target/release/myapp
-    depends_on: [build]
-```
-
-### Environment variables & secrets
-
-Declare environment variables at the pipeline level (applied to every task) or at the task level (overrides pipeline-level values for that task only).
-
-```yaml
-env:
-  NODE_ENV: production
-  API_URL: https://api.example.com
-
-tasks:
-  - id: build
-    command: "npm run build"
-
-  - id: deploy
-    command: "npm run deploy"
-    env:
-      API_URL: https://staging.example.com  # overrides pipeline-level value
-      API_KEY: "${{ secrets.DEPLOY_KEY }}"  # resolved from shell env at runtime
-```
-
-**Secret references** use the `${{ secrets.NAME }}` syntax. At runtime, `rustyochestrator` reads `NAME` from the current shell environment and passes it to the task process — the value is never written to disk.
-
-**Pre-flight validation**: all secrets are resolved before any task starts. If a referenced secret is missing, the run aborts immediately with a clear error:
-
-```
-Error: secret 'DEPLOY_KEY' referenced by env key 'API_KEY' in task 'deploy' is not set in the environment
-```
-
-**Debug logging** prints env keys when `RUST_LOG=debug` is set. Values for keys containing `SECRET`, `TOKEN`, `KEY`, or `PASSWORD` (case-insensitive) are redacted as `***`.
-
-```bash
-RUST_LOG=debug rustyochestrator run pipeline.yaml
-# DEBUG task=deploy key=API_URL value=https://staging.example.com
-# DEBUG task=deploy key=API_KEY value=***
-```
-
-**Cache invalidation**: changing any env value (including secrets) invalidates the task's cache hash, forcing a re-run.
-
-In GitHub Actions workflow files, `env:` blocks at the workflow, job, and step levels are all parsed and merged. Plain values and `${{ secrets.NAME }}` references are forwarded; other `${{ }}` expressions (matrix variables, context references) are silently dropped since they require a real Actions runner.
-
-### GitHub Actions format
-
-Rusty can run GitHub Actions workflow files directly — useful for local testing before pushing.
-
-```yaml
-# .github/workflows/ci.yml
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Compile
-        run: cargo build --release
-
-  test:
-    runs-on: ubuntu-latest
-    needs: [build]
-    steps:
-      - name: Unit tests
-        run: cargo test --all
-```
-
-```bash
-rustyochestrator run .github/workflows/ci.yml
-```
-
-Mapping rules:
-
-- Each `run:` step becomes one task
-- Steps within a job are sequential
-- `needs:` wires the first step of a job to the last step of each required job
-- `uses:` steps (actions) are silently skipped
-
----
-
-## CLI reference
-
-### `run` — execute a pipeline
-
-```bash
-rustyochestrator run <pipeline.yaml> [--concurrency <N>] [--no-tui]
-```
-
-```bash
-rustyochestrator run pipeline.yaml
-rustyochestrator run pipeline.yaml --concurrency 4
-rustyochestrator run .github/workflows/ci.yml      # GitHub Actions format
-rustyochestrator run pipeline.yaml --no-tui        # force plain log output
-RUST_LOG=debug rustyochestrator run pipeline.yaml  # verbose logging
-```
-
-When stdout is a TTY the TUI dashboard is shown automatically:
-
-```
-rustyochestrator — pipeline.yaml   elapsed 00:00:12
-
-  ✓ toolchain                        0.8s   [cached]
-  ✓ fmt                              1.2s
-  ⠸ clippy                           12s    [running]
-  ⠸ build-debug                      9s     [running]
-  ◌ test                                    [waiting]
-  ◌ build-release                           [waiting]
-  ◌ smoke-test                              [waiting]
-
-  ████████░░░░░░░░░░░░░░░░  2/7  2 done  2 running  3 pending  0 failed
-```
-
-Use `--no-tui` to force plain scrolling output (e.g. when piping to a file or running in CI without a pseudo-TTY).
-
-In non-TTY environments (CI, `| tee`, `> file`) the dashboard is suppressed automatically and the plain log format is used instead.
-
----
-
-### `run-all` — run all workflows in a directory simultaneously
-
-Discovers every `.yml` and `.yaml` file in the given directory, loads them all, then runs them concurrently — just like GitHub Actions fires multiple workflow files in parallel. Each workflow's output is prefixed with its filename so interleaved logs are always identifiable.
-
-```bash
-rustyochestrator run-all <dir> [--concurrency <N>]
-```
-
-```bash
-rustyochestrator run-all .github/workflows          # default directory
-rustyochestrator run-all ./pipelines                # any folder
-rustyochestrator run-all examples --concurrency 2   # limit workers per workflow
-```
-
-Example output with two workflows running simultaneously:
-
-```
-INFO  running workflows simultaneously count=2 dir=.github/workflows
-INFO  loaded workflow=ci tasks=7
-INFO  loaded workflow=release tasks=7
-[ci] [INFO] Starting task: lint__cargo_fmt___check
-[release] [INFO] Starting task: build__Install_cross_...
-[ci]   [lint__cargo_fmt___check] ...
-[release]   [build__Install_cross_...|err] Compiling libc v0.2.183
-[ci] [INFO] Completed task: lint__cargo_fmt___check
-[release] [INFO] Completed task: build__Install_cross_...
-```
-
-- All pipelines are validated before any execution starts — parse errors surface immediately
-- Each workflow runs its own independent DAG scheduler with its own cache
-- Exit code is non-zero if any workflow fails; the failing workflow name is reported
-- Works with both native pipeline format and GitHub Actions format files in the same directory
-
----
-
-### `validate` — check without running
-
-Parses the file, checks for missing dependencies and cycles, prints each task and its deps. Exits non-zero on any error.
-
-```bash
-rustyochestrator validate pipeline.yaml
-```
-
-```
-  7 tasks
-  [ok] build
-  [ok] test  (needs: build)
-  [ok] deploy  (needs: test)
-
-pipeline 'pipeline.yaml' is valid.
-```
-
----
-
-### `list` — show execution order
-
-Groups tasks into parallel stages so you can see exactly what runs when.
-
-```bash
-rustyochestrator list pipeline.yaml
-```
-
-```
-Execution order for 'pipeline.yaml':
-
-  Stage 0 — 2 task(s) run in parallel:
-    1. toolchain
-    2. fmt
-
-  Stage 1 — 2 task(s) run in parallel:
-    3. clippy  (after: fmt)
-    4. build-debug  (after: fmt)
-
-  Stage 2 — 1 task(s) run in parallel:
-    5. test  (after: build-debug, clippy)
-```
-
----
-
-### `graph` — ASCII dependency graph
-
-```bash
-rustyochestrator graph pipeline.yaml
-```
-
-```
-Dependency graph for 'pipeline.yaml':
-
-  Stage 0  (no deps):
-    toolchain
-    fmt
-
-  Stage 1:
-    clippy  ◄── [fmt]
-    build-debug  ◄── [fmt]
-
-  Stage 2:
-    test  ◄── [build-debug, clippy]
-```
-
----
-
-### `cache show` — inspect the cache
-
-```bash
-rustyochestrator cache show
-```
-
-```
-  task                           status     hash
-  ------------------------------------------------------------------------
-  build                          ok         b3d10802f5217f42
-  clippy                         ok         9eeaf9f8bc055df3
-  fmt                            ok         810e75f0d3dee10e
-  test                           ok         257080d6e3e17348
-
-  4 cached task(s).
-```
-
----
-
-### `cache clean` — clear the cache
-
-Forces every task to re-run on the next `rustyochestrator run`.
-
-```bash
-rustyochestrator cache clean
-# Cache cleared.
-```
-
----
-
-### `init` — scaffold a new pipeline
-
-Creates a starter `pipeline.yaml` (or a custom filename) in the current directory.
-
-```bash
-rustyochestrator init                    # creates pipeline.yaml
-rustyochestrator init my-pipeline.yaml   # custom filename
-```
-
----
-
-### `connect` — link to dashhy dashboard
-
-```bash
-rustyochestrator connect --token <jwt> --url <dashboard-url>
-```
-
-Saves the connection to `~/.rustyochestrator/connect.json`. All subsequent `run` commands will report live to the dashboard.
-
----
-
-### `disconnect` — remove dashboard connection
-
-```bash
-rustyochestrator disconnect
-```
-
----
-
-### `status` — show connection status
-
-```bash
-rustyochestrator status
-# Connected
-#   Dashboard : https://your-dashhy.vercel.app
-#   User      : @your-github-username
-```
-
----
-
 ## Caching
 
 Cache entries are stored in `.rustyochestrator/cache.json`.
 
 A task is a **cache hit** when:
 
-1. Its SHA-256 hash (of `command + dependency IDs + env key/value pairs`) matches the stored entry
+1. Its SHA-256 hash of `command + dependency IDs + env key/value pairs` matches the stored entry
 2. The previous run recorded `success: true`
 
 ```json
@@ -617,7 +606,7 @@ A task is a **cache hit** when:
 }
 ```
 
-To force a full re-run, delete the cache:
+To force a full re-run, clear the cache:
 
 ```bash
 rustyochestrator cache clean
@@ -627,6 +616,54 @@ rm -rf .rustyochestrator
 
 ---
 
+## Features
+
+| Feature | Description |
+| --- | --- |
+| **Parallel execution** | Worker pool backed by Tokio; concurrency defaults to the number of logical CPUs |
+| **DAG scheduling** | Dependencies resolved at runtime; tasks start as soon as their deps finish |
+| **Content-addressable cache** | Tasks hashed by command + deps + env; unchanged tasks skipped instantly |
+| **GitHub Actions compatibility** | Parse and run `.github/workflows/*.yml` files directly |
+| **Parallel workflow execution** | `run-all` runs every workflow file in a directory simultaneously |
+| **Live TUI dashboard** | Colour-coded per-task progress with spinners, elapsed time, and a summary bar |
+| **CI-friendly output** | Auto-detects non-TTY environments and falls back to plain log output |
+| **Environment variables & secrets** | Declare `env:` at pipeline or task level; secret refs resolved from shell env |
+| **Pre-flight secret validation** | All secrets validated before execution starts; missing secrets abort immediately |
+| **Retry logic** | Failed tasks are retried up to 2 times before being marked failed |
+| **Failure propagation** | When a task fails, its entire transitive dependent subtree is cancelled |
+| **Real-time output streaming** | Stdout and stderr from every task streamed line-by-line as they run |
+| **Cycle detection** | Circular dependencies caught and reported before execution starts |
+| **Dashboard integration** | Optional dashhy integration streams pipeline events to a hosted monitoring UI |
+
+---
+
+## Contributing
+
+Contributions are welcome. To get started:
+
+```bash
+git clone https://github.com/KodeSage/rustyochestrator
+cd rustyochestrator
+cargo build
+cargo test
+```
+
+Use `cargo run -- <command>` in place of the installed binary during development:
+
+```bash
+cargo run -- run examples/pipeline.yaml
+cargo run -- validate examples/pipeline.yaml
+cargo run -- list examples/pipeline.yaml
+cargo run -- graph examples/pipeline.yaml
+cargo run -- cache show
+cargo run -- init
+cargo run -- run-all .github/workflows
+```
+
+Please open an issue before submitting large changes so we can align on the approach.
+
+---
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

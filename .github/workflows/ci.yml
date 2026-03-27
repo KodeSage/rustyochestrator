@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, dev]
   pull_request:
     branches: [main, master]
 
@@ -74,7 +74,7 @@ jobs:
             target/release/rustyochestrator
             target/release/rustyochestrator.exe
 
-  # ── 3. Unit tests ───────────────────────────────────────────────────────────
+  # ── 3. Unit & Integration Tests ─────────────────────────────────────────────
   test:
     name: Tests
     needs: lint
@@ -94,8 +94,32 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: cargo test
+      - name: Run all tests
         run: cargo test --all
+
+      - name: Run pipeline tests
+        run: cargo test --test pipeline_tests
+
+      - name: Run cache tests
+        run: cargo test --test cache_tests
+
+      - name: Run github tests
+        run: cargo test --test github_tests
+
+      - name: Run executor tests
+        run: cargo test --test executor_tests
+
+      - name: Run scheduler tests
+        run: cargo test --test scheduler_tests
+
+      - name: Run config tests
+        run: cargo test --test config_tests
+
+      - name: Run reporter tests
+        run: cargo test --test reporter_tests
+
+      - name: Run errors tests
+        run: cargo test --test errors_tests
 
   # ── 4. Integration smoke test ───────────────────────────────────────────────
   integration:
@@ -129,3 +153,17 @@ jobs:
 
       - name: Run GitHub Actions example (via rustyochestrator)
         run: cargo run -- run examples/github_actions.yaml
+
+      - name: Validate pipeline without running
+        run: cargo run -- validate examples/pipeline.yaml
+
+      - name: List pipeline execution order
+        run: cargo run -- list examples/pipeline.yaml
+
+      - name: Print dependency graph
+        run: cargo run -- graph examples/pipeline.yaml
+
+      - name: Scaffold and validate a new pipeline
+        run: |
+          cargo run -- init /tmp/test_init_pipeline.yaml
+          cargo run -- validate /tmp/test_init_pipeline.yaml
