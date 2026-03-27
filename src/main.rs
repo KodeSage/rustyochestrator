@@ -455,6 +455,21 @@ fn load_dotenv() {
     let Ok(content) = std::fs::read_to_string(".env") else {
         return; // no .env file — silently skip
     };
+    for (key, value) in parse_dotenv(&content) {
+        if std::env::var(&key).is_err() {
+            // SAFETY: load_dotenv() is called from the sync `main()` before `async_main()`
+            // starts the tokio runtime, so no other threads exist yet.
+            unsafe {
+                std::env::set_var(&key, &value);
+            }
+        }
+    }
+}
+
+/// Parse the contents of a `.env` file into a list of (key, value) pairs.
+/// Pure function — no I/O, no environment mutation — safe to unit test.
+fn parse_dotenv(content: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
     for raw in content.lines() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -466,6 +481,9 @@ fn load_dotenv() {
             continue;
         };
         let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
         let value = value.trim();
         // strip a single layer of matching surrounding quotes
         let value = if value.len() >= 2
@@ -476,18 +494,197 @@ fn load_dotenv() {
         } else {
             value
         };
-        // don't override a variable that is already set in the real environment
-        if std::env::var(key).is_err() {
-            // SAFETY: load_dotenv() is called from the sync `main()` before `async_main()`
-            // starts the tokio runtime, so no other threads exist yet.
-            unsafe {
-                std::env::set_var(key, value);
-            }
-        }
+        pairs.push((key.to_string(), value.to_string()));
     }
+    pairs
 }
 
 fn die(msg: &str) -> ! {
     eprintln!("error: {}", msg);
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_dotenv;
+
+    // ── Parsing: basic formats ────────────────────────────────────────────────
+
+    #[test]
+    fn test_basic_key_value() {
+        assert_eq!(
+            parse_dotenv("FOO=bar"),
+            vec![("FOO".to_string(), "bar".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_export_prefix_stripped() {
+        assert_eq!(
+            parse_dotenv("export FOO=bar"),
+            vec![("FOO".to_string(), "bar".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_export_prefix_with_extra_spaces() {
+        assert_eq!(
+            parse_dotenv("export   FOO=bar"),
+            vec![("FOO".to_string(), "bar".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_whitespace_around_key_and_value() {
+        assert_eq!(
+            parse_dotenv("  FOO  =  bar  "),
+            vec![("FOO".to_string(), "bar".to_string())]
+        );
+    }
+
+    // ── Parsing: quoted values ────────────────────────────────────────────────
+
+    #[test]
+    fn test_double_quoted_value() {
+        assert_eq!(
+            parse_dotenv(r#"FOO="bar baz""#),
+            vec![("FOO".to_string(), "bar baz".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_single_quoted_value() {
+        assert_eq!(
+            parse_dotenv("FOO='bar baz'"),
+            vec![("FOO".to_string(), "bar baz".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_mismatched_quotes_not_stripped() {
+        // opening " but closing ' — not a matching pair, kept as-is
+        assert_eq!(
+            parse_dotenv("FOO=\"bar'"),
+            vec![("FOO".to_string(), "\"bar'".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_value_with_equals_sign() {
+        // only the first '=' splits key/value; the rest belongs to the value
+        assert_eq!(
+            parse_dotenv("URL=https://example.com?a=1&b=2"),
+            vec![("URL".to_string(), "https://example.com?a=1&b=2".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_empty_value() {
+        assert_eq!(
+            parse_dotenv("FOO="),
+            vec![("FOO".to_string(), "".to_string())]
+        );
+    }
+
+    // ── Parsing: skipped lines ────────────────────────────────────────────────
+
+    #[test]
+    fn test_comment_lines_skipped() {
+        assert_eq!(parse_dotenv("# this is a comment"), vec![]);
+    }
+
+    #[test]
+    fn test_inline_comment_not_stripped() {
+        // inline comments are not part of the .env spec — the '#' is part of the value
+        let pairs = parse_dotenv("FOO=bar # not a comment");
+        assert_eq!(pairs[0].1, "bar # not a comment");
+    }
+
+    #[test]
+    fn test_blank_lines_skipped() {
+        assert_eq!(parse_dotenv("\n\n   \n"), vec![]);
+    }
+
+    #[test]
+    fn test_line_without_equals_skipped() {
+        assert_eq!(parse_dotenv("NOEQUALS"), vec![]);
+    }
+
+    #[test]
+    fn test_empty_key_skipped() {
+        assert_eq!(parse_dotenv("=value"), vec![]);
+    }
+
+    // ── Parsing: multi-line content ───────────────────────────────────────────
+
+    #[test]
+    fn test_multiple_entries_parsed_in_order() {
+        let content = "FOO=1\nBAR=2\nBAZ=3";
+        assert_eq!(
+            parse_dotenv(content),
+            vec![
+                ("FOO".to_string(), "1".to_string()),
+                ("BAR".to_string(), "2".to_string()),
+                ("BAZ".to_string(), "3".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mixed_valid_and_skipped_lines() {
+        let content = "\
+# comment
+FOO=bar
+
+export BAR=baz
+NOEQUALS
+BAZ=qux";
+        let pairs = parse_dotenv(content);
+        assert_eq!(pairs.len(), 3);
+        assert_eq!(pairs[0], ("FOO".to_string(), "bar".to_string()));
+        assert_eq!(pairs[1], ("BAR".to_string(), "baz".to_string()));
+        assert_eq!(pairs[2], ("BAZ".to_string(), "qux".to_string()));
+    }
+
+    #[test]
+    fn test_empty_content_returns_empty() {
+        assert_eq!(parse_dotenv(""), vec![]);
+    }
+
+    // ── Env precedence (tests set_var directly; unique keys avoid collisions) ─
+
+    #[test]
+    fn test_existing_env_var_not_overwritten() {
+        let key = "RUSTYORCH_TEST_PRECEDENCE_A9F3";
+        unsafe { std::env::set_var(key, "original") };
+
+        // parse_dotenv returns the pair, but load_dotenv skips keys already set
+        let pairs = parse_dotenv(&format!("{}=should_not_win\n", key));
+        assert_eq!(pairs.len(), 1); // parse_dotenv itself doesn't check the env
+
+        // simulate what load_dotenv does: only set if absent
+        for (k, v) in &pairs {
+            if std::env::var(k).is_err() {
+                unsafe { std::env::set_var(k, v) };
+            }
+        }
+        assert_eq!(std::env::var(key).unwrap(), "original");
+        unsafe { std::env::remove_var(key) };
+    }
+
+    #[test]
+    fn test_absent_env_var_is_set() {
+        let key = "RUSTYORCH_TEST_ABSENT_B7C1";
+        // ensure it is not already set
+        unsafe { std::env::remove_var(key) };
+
+        let pairs = parse_dotenv(&format!("{}=hello_dotenv\n", key));
+        for (k, v) in &pairs {
+            if std::env::var(k).is_err() {
+                unsafe { std::env::set_var(k, v) };
+            }
+        }
+        assert_eq!(std::env::var(key).unwrap(), "hello_dotenv");
+        unsafe { std::env::remove_var(key) };
+    }
 }

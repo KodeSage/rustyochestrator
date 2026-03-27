@@ -359,7 +359,7 @@ rustyochestrator init my-pipeline.yaml  # custom filename
 
 ### `connect` — link to dashhy dashboard
 
-Stream live pipeline events to a hosted monitoring UI.
+Stream live pipeline events to [Dashhy](https://github.com/KodeSage/Dashhy), the hosted monitoring UI built for Rusty Orchestrator.
 
 ```bash
 rustyochestrator connect --token <jwt> --url <dashboard-url>
@@ -447,9 +447,26 @@ tasks:
       API_KEY: "${{ secrets.DEPLOY_KEY }}"  # read from shell environment at runtime
 ```
 
-**Secret references** use `${{ secrets.NAME }}` syntax. At runtime, the value is read from the current shell environment and passed to the task process — it is never written to disk.
+**Secret references** use `${{ secrets.NAME }}` syntax. At runtime, the value is read from the process environment and passed to the task process — it is never written to disk.
 
-**Pre-flight validation:** all secrets are resolved before any task starts. If a referenced secret is missing, the run aborts immediately:
+**`.env` file support:** Rusty Orchestrator automatically loads a `.env` file from the current directory before running any pipeline. This means you can store secrets locally without exporting them to your shell every session:
+
+```bash
+# .env  (add to .gitignore — never commit this file)
+DEPLOY_KEY=ghp_yourtoken
+DATABASE_URL=postgres://localhost/mydb
+```
+
+```bash
+rustyochestrator run pipeline.yaml   # DEPLOY_KEY is resolved from .env automatically
+```
+
+Precedence rules:
+- A variable already exported in your shell always wins over the `.env` value
+- `.env` wins over "not set at all"
+- Values may be quoted with `"..."` or `'...'`; both `KEY=VALUE` and `export KEY=VALUE` are accepted
+
+**Pre-flight validation:** all secrets are resolved before any task starts. If a referenced secret is missing from both the shell environment and `.env`, the run aborts immediately:
 
 ```
 Error: secret 'DEPLOY_KEY' referenced by env key 'API_KEY' in task 'deploy' is not set in the environment
@@ -627,13 +644,14 @@ rm -rf .rustyochestrator
 | **Parallel workflow execution** | `run-all` runs every workflow file in a directory simultaneously |
 | **Live TUI dashboard** | Colour-coded per-task progress with spinners, elapsed time, and a summary bar |
 | **CI-friendly output** | Auto-detects non-TTY environments and falls back to plain log output |
-| **Environment variables & secrets** | Declare `env:` at pipeline or task level; secret refs resolved from shell env |
+| **Environment variables & secrets** | Declare `env:` at pipeline or task level; secret refs resolved from shell env or `.env` file |
+| **`.env` file support** | Automatically loads `.env` from the current directory; shell exports always take precedence |
 | **Pre-flight secret validation** | All secrets validated before execution starts; missing secrets abort immediately |
 | **Retry logic** | Failed tasks are retried up to 2 times before being marked failed |
 | **Failure propagation** | When a task fails, its entire transitive dependent subtree is cancelled |
 | **Real-time output streaming** | Stdout and stderr from every task streamed line-by-line as they run |
 | **Cycle detection** | Circular dependencies caught and reported before execution starts |
-| **Dashboard integration** | Optional dashhy integration streams pipeline events to a hosted monitoring UI |
+| **Dashboard integration** | Optional [Dashhy](https://github.com/KodeSage/Dashhy) integration streams live pipeline events to a hosted monitoring UI |
 
 ---
 

@@ -121,6 +121,9 @@ jobs:
       - name: Run errors tests
         run: cargo test --test errors_tests
 
+      - name: Run main.rs unit tests (parse_dotenv)
+        run: cargo test --bin rustyochestrator
+
   # ── 4. Integration smoke test ───────────────────────────────────────────────
   integration:
     name: Integration smoke test
