@@ -2,6 +2,7 @@ use crate::errors::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const CACHE_DIR: &str = ".rustyochestrator";
 const CACHE_FILE: &str = ".rustyochestrator/cache.json";
@@ -28,14 +29,27 @@ impl Cache {
             return Ok(Cache::default());
         }
         let raw = std::fs::read_to_string(CACHE_FILE)?;
-        Ok(serde_json::from_str(&raw)?)
+        // A concurrent save may have left a partial file; treat parse errors as a cache miss
+        // rather than aborting the run — the cache is an optimisation, not a source of truth.
+        Ok(serde_json::from_str(&raw).unwrap_or_default())
     }
 
-    /// Persist cache to disk.
+    /// Persist cache to disk using an atomic write (temp file → rename) so concurrent
+    /// readers never observe a truncated or partially-written file.
     pub fn save(&self) -> Result<()> {
         std::fs::create_dir_all(CACHE_DIR)?;
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(CACHE_FILE, json)?;
+        // Build a unique temp path: PID + subsec_nanos avoids collisions across
+        // threads in the same process and across concurrent processes.
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        let tmp = format!("{}.{}-{}.tmp", CACHE_FILE, std::process::id(), nonce);
+        std::fs::write(&tmp, &json)?;
+        // rename(2) on POSIX is atomic: readers always see the old file or the new
+        // file, never a half-written state.
+        std::fs::rename(&tmp, CACHE_FILE)?;
         Ok(())
     }
 
