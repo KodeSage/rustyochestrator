@@ -17,9 +17,11 @@ fn test_connect_config_json_round_trip() {
 
 #[test]
 fn test_connect_config_pretty_json_contains_expected_keys() {
+    dotenvy::dotenv().ok();
+    let token = std::env::var("TEST_TOKEN").expect("TEST_TOKEN must be set in .env");
     let config = ConnectConfig {
         dashboard_url: "https://dashhy.vercel.app".to_string(),
-        token: "eyJhbGciOiJIUzI1NiJ9".to_string(),
+        token,
         user_login: "alice".to_string(),
     };
     let json = serde_json::to_string_pretty(&config).unwrap();

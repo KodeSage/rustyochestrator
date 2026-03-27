@@ -1,17 +1,16 @@
 name: Release
 
-# Triggers on any tag like v0.1.0, v1.2.3, etc.
+# Triggers on tags like v1.0.0 and v1.0.0-beta
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
 
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: rustyochestrator
 
 jobs:
-  # ── Build native binaries for every target ──────────────────────────────────
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -19,34 +18,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS — Apple Silicon
           - target: aarch64-apple-darwin
             os: macos-latest
             archive: tar.gz
 
-          # macOS — Intel
           - target: x86_64-apple-darwin
             os: macos-latest
             archive: tar.gz
 
-          # Linux — x86_64 (glibc, works on Ubuntu 20.04+)
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
 
-          # Linux — ARM64 (Raspberry Pi 4, AWS Graviton, etc.)
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
-            cross: true          # uses cross-rs for cross-compilation
+            cross: true
 
-          # Linux — musl (fully static, no libc dependency)
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             archive: tar.gz
             cross: true
 
-          # Windows — x86_64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: zip
@@ -60,7 +53,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross (for cross-compilation targets)
+      - name: Install cross
         if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
@@ -71,9 +64,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
-      # ── Compile ──────────────────────────────────────────────────────────────
       - name: Build (cross)
         if: matrix.cross
         run: cross build --release --target ${{ matrix.target }}
@@ -82,7 +74,6 @@ jobs:
         if: "!matrix.cross"
         run: cargo build --release --target ${{ matrix.target }}
 
-      # ── Package ──────────────────────────────────────────────────────────────
       - name: Package (tar.gz, Unix)
         if: matrix.archive == 'tar.gz'
         shell: bash
@@ -105,7 +96,6 @@ jobs:
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
           "$hash  $archive" | Out-File -Encoding ASCII "$archive.sha256"
 
-      # ── Upload artifact for the release job ──────────────────────────────────
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -114,7 +104,6 @@ jobs:
             ${{ env.ASSET }}
             ${{ env.ASSET }}.sha256
 
-  # ── Create the GitHub Release and attach all binaries ───────────────────────
   release:
     name: Publish GitHub Release
     needs: build
@@ -125,6 +114,60 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 🔥 Generate changelog
+      - name: Generate changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            git log --pretty=format:"- %s" > CHANGELOG_GEN.md
+          else
+            git log $PREV_TAG..HEAD --pretty=format:"- %s" > CHANGELOG_GEN.md
+          fi
+
+      # 🔥 Generate install.sh
+      - name: Generate install script
+        run: |
+          cat << 'EOF' > install.sh
+          #!/usr/bin/env bash
+          set -e
+
+          REPO="${{ github.repository }}"
+          BINARY="rustyochestrator"
+
+          OS="$(uname -s)"
+          ARCH="$(uname -m)"
+
+          case "$OS" in
+            Darwin) OS="apple-darwin" ;;
+            Linux) OS="unknown-linux-gnu" ;;
+            *) echo "Unsupported OS: $OS"; exit 1 ;;
+          esac
+
+          case "$ARCH" in
+            x86_64) ARCH="x86_64" ;;
+            arm64|aarch64) ARCH="aarch64" ;;
+            *) echo "Unsupported ARCH: $ARCH"; exit 1 ;;
+          esac
+
+          TARGET="$ARCH-$OS"
+
+          VERSION="${{ github.ref_name }}"
+          ARCHIVE="$BINARY-$VERSION-$TARGET.tar.gz"
+          URL="https://github.com/$REPO/releases/download/$VERSION/$ARCHIVE"
+
+          echo "Installing $BINARY $VERSION for $TARGET..."
+
+          curl -L "$URL" -o "$ARCHIVE"
+          tar -xzf "$ARCHIVE"
+
+          chmod +x "$BINARY"
+          sudo mv "$BINARY" /usr/local/bin/
+
+          echo "✅ Installed!"
+          EOF
+
+          chmod +x install.sh
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -134,47 +177,19 @@ jobs:
       - name: Generate combined checksums file
         run: |
           cat artifacts/*.sha256 > checksums.txt
-          cat checksums.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: "rustyochestrator ${{ github.ref_name }}"
-          body: |
-            ## rustyochestrator ${{ github.ref_name }}
-
-            ### Install
-
-            **Cargo (recommended for Rust users):**
-            ```bash
-            cargo install rustyochestrator
-            ```
-
-            **macOS / Linux — one-liner:**
-            ```bash
-            curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.sh | sh
-            ```
-
-            **Direct download:**
-            Pick the archive for your platform below, then:
-            ```bash
-            tar xzf rustyochestrator-*.tar.gz
-            sudo mv rustyochestrator /usr/local/bin/
-            ```
-
-            ### Checksums
-            Verify your download against `checksums.txt`.
-
-            ### What's changed
-            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) or compare at
-            https://github.com/${{ github.repository }}/compare/...
+          body_path: CHANGELOG_GEN.md
           files: |
             artifacts/*
             checksums.txt
+            install.sh
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}  # v1.0.0-beta → pre-release
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
-  # ── Publish to crates.io ─────────────────────────────────────────────────────
   publish-crate:
     name: Publish to crates.io
     needs: release
@@ -186,5 +201,28 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Validate version matches tag
+        run: |
+          TAG_VERSION=${GITHUB_REF_NAME#v}
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -n1 | cut -d '"' -f2)
+
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "Version mismatch"
+            exit 1
+          fi
+
+      - name: Check token
+        run: |
+          if [ -z "${{ secrets.CARGO_REGISTRY_TOKEN }}" ]; then
+            echo "Missing token"
+            exit 1
+          fi
+
+      - name: Dry run
+        run: cargo publish --dry-run
+
       - name: Publish
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        if: "!contains(github.ref_name, '-')"
+        run: cargo publish --locked --token $CARGO_REGISTRY_TOKEN || echo "Already published"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

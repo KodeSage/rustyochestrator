@@ -17,8 +17,15 @@ use std::io::IsTerminal;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
+/// Sync entry point — loads .env before the tokio runtime (and its worker threads) start,
+/// which is the only point at which calling `set_var` is guaranteed to be single-threaded.
+fn main() {
+    load_dotenv();
+    async_main();
+}
+
 #[tokio::main]
-async fn main() {
+async fn async_main() {
     // Parse CLI first so we can detect TUI mode before initialising tracing.
     let cli = Cli::parse();
 
@@ -434,6 +441,50 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
         out.push((n >> 16) as u8);
     }
     Some(out)
+}
+
+/// Load `.env` from the current directory into the process environment.
+///
+/// Rules:
+/// - Lines starting with `#` and blank lines are ignored.
+/// - `export KEY=VALUE` and `KEY=VALUE` are both accepted.
+/// - Values wrapped in matching `"..."` or `'...'` are unquoted.
+/// - Variables already present in the environment are NOT overwritten, so a
+///   real shell export always takes precedence over the file.
+fn load_dotenv() {
+    let Ok(content) = std::fs::read_to_string(".env") else {
+        return; // no .env file — silently skip
+    };
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // strip optional leading "export "
+        let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        // strip a single layer of matching surrounding quotes
+        let value = if value.len() >= 2
+            && ((value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\'')))
+        {
+            &value[1..value.len() - 1]
+        } else {
+            value
+        };
+        // don't override a variable that is already set in the real environment
+        if std::env::var(key).is_err() {
+            // SAFETY: load_dotenv() is called from the sync `main()` before `async_main()`
+            // starts the tokio runtime, so no other threads exist yet.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+        }
+    }
 }
 
 fn die(msg: &str) -> ! {
