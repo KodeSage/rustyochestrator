@@ -359,7 +359,7 @@ rustyochestrator init my-pipeline.yaml  # custom filename
 
 ### `connect` — link to dashhy dashboard
 
-Stream live pipeline events to a hosted monitoring UI.
+Stream live pipeline events to [Dashhy](https://github.com/KodeSage/Dashhy), the hosted monitoring UI built for Rusty Orchestrator.
 
 ```bash
 rustyochestrator connect --token <jwt> --url <dashboard-url>
@@ -447,9 +447,26 @@ tasks:
       API_KEY: "${{ secrets.DEPLOY_KEY }}"  # read from shell environment at runtime
 ```
 
-**Secret references** use `${{ secrets.NAME }}` syntax. At runtime, the value is read from the current shell environment and passed to the task process — it is never written to disk.
+**Secret references** use `${{ secrets.NAME }}` syntax. At runtime, the value is read from the process environment and passed to the task process — it is never written to disk.
 
-**Pre-flight validation:** all secrets are resolved before any task starts. If a referenced secret is missing, the run aborts immediately:
+**`.env` file support:** Rusty Orchestrator automatically loads a `.env` file from the current directory before running any pipeline. This means you can store secrets locally without exporting them to your shell every session:
+
+```bash
+# .env  (add to .gitignore — never commit this file)
+DEPLOY_KEY=ghp_yourtoken
+DATABASE_URL=postgres://localhost/mydb
+```
+
+```bash
+rustyochestrator run pipeline.yaml   # DEPLOY_KEY is resolved from .env automatically
+```
+
+Precedence rules:
+- A variable already exported in your shell always wins over the `.env` value
+- `.env` wins over "not set at all"
+- Values may be quoted with `"..."` or `'...'`; both `KEY=VALUE` and `export KEY=VALUE` are accepted
+
+**Pre-flight validation:** all secrets are resolved before any task starts. If a referenced secret is missing from both the shell environment and `.env`, the run aborts immediately:
 
 ```
 Error: secret 'DEPLOY_KEY' referenced by env key 'API_KEY' in task 'deploy' is not set in the environment
@@ -627,13 +644,55 @@ rm -rf .rustyochestrator
 | **Parallel workflow execution** | `run-all` runs every workflow file in a directory simultaneously |
 | **Live TUI dashboard** | Colour-coded per-task progress with spinners, elapsed time, and a summary bar |
 | **CI-friendly output** | Auto-detects non-TTY environments and falls back to plain log output |
-| **Environment variables & secrets** | Declare `env:` at pipeline or task level; secret refs resolved from shell env |
+| **Environment variables & secrets** | Declare `env:` at pipeline or task level; secret refs resolved from shell env or `.env` file |
+| **`.env` file support** | Automatically loads `.env` from the current directory; shell exports always take precedence |
 | **Pre-flight secret validation** | All secrets validated before execution starts; missing secrets abort immediately |
 | **Retry logic** | Failed tasks are retried up to 2 times before being marked failed |
 | **Failure propagation** | When a task fails, its entire transitive dependent subtree is cancelled |
 | **Real-time output streaming** | Stdout and stderr from every task streamed line-by-line as they run |
 | **Cycle detection** | Circular dependencies caught and reported before execution starts |
-| **Dashboard integration** | Optional dashhy integration streams pipeline events to a hosted monitoring UI |
+| **Dashboard integration** | Optional [Dashhy](https://github.com/KodeSage/Dashhy) integration streams live pipeline events to a hosted monitoring UI |
+
+---
+
+## Roadmap
+
+**v0.2.x — Reliability & usability**
+- Per-task `timeout` field with pipeline-level default
+- Configurable `retries: N` per task with optional retry delay / backoff
+- Task output capture (`outputs:`) so downstream tasks can reference generated values
+- Conditional task execution with `if:` field
+
+**v0.3.x — GitHub Actions compatibility**
+- `strategy.matrix` expansion — one task generated per matrix combination
+- `${{ github.* }}` and `${{ env.* }}` context variable resolution
+- `if:` expression evaluation (`success()`, `failure()`, `always()`)
+- Named warnings for skipped `uses:` actions; no-op stubs for `actions/checkout`, `dtolnay/rust-toolchain`, `actions/cache`
+- **Local artifact store** — first-class stubs for `actions/upload-artifact` and `actions/download-artifact` backed by `.rustyochestrator/artifacts/<run-id>/`, enabling release workflows with inter-job file transfer to run locally
+
+**v0.4.x — Observability**
+- `rustyochestrator report` command with JSON/Markdown run summary
+- `--dry-run`, `--verbose`, and `--trace-deps` flags
+- Per-task timing breakdown highlighting bottleneck tasks
+- `--log-file <path>` for CI artifact capture
+
+**v0.5.x — Execution control**
+- `--resume` to skip previously-succeeded tasks
+- `--force` to ignore cache and re-run everything
+- `--only <task_id,...>` to run a subset and their dependencies
+- `shell:` field per task for custom shell selection
+
+**v0.6.x — Dashboard & remote integration**
+- Real-time log streaming to the dashboard
+- Webhook trigger server (`rustyochestrator serve`)
+- Local run history (`rustyochestrator history`)
+- Remote cache backend (S3, GCS, HTTP)
+- **GitHub Release creation** — first-class stub for `softprops/action-gh-release`, calling the GitHub Releases API with a `GITHUB_TOKEN` secret to create releases and upload assets locally
+
+**v0.7.x — Platform & distribution**
+- Windows support
+- Plugin / hook system (`on_task_start`, `on_task_success`, `on_task_failure`)
+- Homebrew formula, Debian/RPM packages, GitHub Actions action
 
 ---
 
