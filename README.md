@@ -655,47 +655,6 @@ rm -rf .rustyochestrator
 
 ---
 
-## Roadmap
-
-**v0.2.x — Reliability & usability**
-- Per-task `timeout` field with pipeline-level default
-- Configurable `retries: N` per task with optional retry delay / backoff
-- Task output capture (`outputs:`) so downstream tasks can reference generated values
-- Conditional task execution with `if:` field
-
-**v0.3.x — GitHub Actions compatibility**
-- `strategy.matrix` expansion — one task generated per matrix combination
-- `${{ github.* }}` and `${{ env.* }}` context variable resolution
-- `if:` expression evaluation (`success()`, `failure()`, `always()`)
-- Named warnings for skipped `uses:` actions; no-op stubs for `actions/checkout`, `dtolnay/rust-toolchain`, `actions/cache`
-- **Local artifact store** — first-class stubs for `actions/upload-artifact` and `actions/download-artifact` backed by `.rustyochestrator/artifacts/<run-id>/`, enabling release workflows with inter-job file transfer to run locally
-
-**v0.4.x — Observability**
-- `rustyochestrator report` command with JSON/Markdown run summary
-- `--dry-run`, `--verbose`, and `--trace-deps` flags
-- Per-task timing breakdown highlighting bottleneck tasks
-- `--log-file <path>` for CI artifact capture
-
-**v0.5.x — Execution control**
-- `--resume` to skip previously-succeeded tasks
-- `--force` to ignore cache and re-run everything
-- `--only <task_id,...>` to run a subset and their dependencies
-- `shell:` field per task for custom shell selection
-
-**v0.6.x — Dashboard & remote integration**
-- Real-time log streaming to the dashboard
-- Webhook trigger server (`rustyochestrator serve`)
-- Local run history (`rustyochestrator history`)
-- Remote cache backend (S3, GCS, HTTP)
-- **GitHub Release creation** — first-class stub for `softprops/action-gh-release`, calling the GitHub Releases API with a `GITHUB_TOKEN` secret to create releases and upload assets locally
-
-**v0.7.x — Platform & distribution**
-- Windows support
-- Plugin / hook system (`on_task_start`, `on_task_success`, `on_task_failure`)
-- Homebrew formula, Debian/RPM packages, GitHub Actions action
-
----
-
 ## Contributing
 
 Contributions are welcome. To get started:
