@@ -5,6 +5,7 @@ mod errors;
 mod executor;
 mod github;
 mod pipeline;
+mod report;
 mod reporter;
 mod scheduler;
 mod tui;
@@ -31,8 +32,12 @@ async fn async_main() {
 
     // In TUI mode suppress info-level tracing so it doesn't bleed into the display.
     let tui_active = match &cli.command {
-        Commands::Run { no_tui, .. } => !no_tui && std::io::stdout().is_terminal(),
-        Commands::RunAll { no_tui, .. } => !no_tui && std::io::stdout().is_terminal(),
+        Commands::Run {
+            no_tui, verbose, ..
+        } => !no_tui && !verbose && std::io::stdout().is_terminal(),
+        Commands::RunAll {
+            no_tui, verbose, ..
+        } => !no_tui && !verbose && std::io::stdout().is_terminal(),
         _ => false,
     };
     let default_level = if tui_active { "warn" } else { "info" };
@@ -49,6 +54,11 @@ async fn async_main() {
             pipeline: path,
             concurrency,
             no_tui,
+            verbose,
+            dry_run,
+            trace_deps,
+            log_file,
+            keep_artifacts,
         } => {
             let pipeline = load_pipeline(&path);
             let workers = concurrency.unwrap_or_else(num_cpus::get);
@@ -60,14 +70,41 @@ async fn async_main() {
                 .unwrap_or("pipeline")
                 .to_string();
 
-            let use_tui = !no_tui && std::io::stdout().is_terminal();
+            let use_tui = !no_tui && !verbose && !dry_run && std::io::stdout().is_terminal();
 
-            if !use_tui {
+            if !use_tui && !dry_run {
                 tracing::info!(workers, tasks = pipeline.tasks.len(), "pipeline starting");
             }
 
+            // Set up artifact run ID
+            let run_id = format!(
+                "{}-{}",
+                name,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            );
+            unsafe {
+                std::env::set_var("RUSTYORCH_RUN_ID", &run_id);
+            }
+
             // Build scheduler
-            let mut scheduler = Scheduler::new(pipeline.clone(), workers).with_name(name.clone());
+            let mut scheduler = Scheduler::new(pipeline.clone(), workers)
+                .with_name(name.clone())
+                .with_dry_run(dry_run)
+                .with_trace_deps(trace_deps);
+
+            // Log file
+            if let Some(ref log_path) = log_file {
+                match executor::create_log_writer(log_path) {
+                    Ok(lw) => {
+                        scheduler = scheduler.with_log_writer(lw);
+                        tracing::info!("logging to file: {}", log_path);
+                    }
+                    Err(e) => die(&format!("cannot create log file '{}': {}", log_path, e)),
+                }
+            }
 
             if let Some(cfg) = config::load() {
                 let r = reporter::Reporter::new(cfg.dashboard_url.clone(), cfg.token.clone());
@@ -84,7 +121,7 @@ async fn async_main() {
 
             match scheduler.run().await {
                 Ok(true) => {
-                    if !use_tui {
+                    if !use_tui && !dry_run {
                         tracing::info!("pipeline completed successfully");
                     }
                 }
@@ -92,26 +129,63 @@ async fn async_main() {
                     if !use_tui {
                         eprintln!("error: pipeline finished with failures");
                     }
+                    cleanup_artifacts(&run_id, keep_artifacts);
                     std::process::exit(1);
                 }
-                Err(e) => die(&e.to_string()),
+                Err(e) => {
+                    cleanup_artifacts(&run_id, keep_artifacts);
+                    die(&e.to_string());
+                }
             }
+
+            cleanup_artifacts(&run_id, keep_artifacts);
         }
 
         Commands::Validate { pipeline: path } => {
             let pipeline = load_pipeline(&path);
             println!("  {} tasks", pipeline.tasks.len());
             for task in &pipeline.tasks {
-                if task.depends_on.is_empty() {
+                let mut info_parts = Vec::new();
+                if !task.depends_on.is_empty() {
+                    info_parts.push(format!("needs: {}", task.depends_on.join(", ")));
+                }
+                if let Some(ref t) = task.timeout {
+                    info_parts.push(format!("timeout: {}", t));
+                }
+                if let Some(r) = task.retries {
+                    info_parts.push(format!("retries: {}", r));
+                }
+                if !task.outputs.is_empty() {
+                    info_parts.push(format!("outputs: [{}]", task.outputs.join(", ")));
+                }
+                if let Some(ref c) = task.condition {
+                    info_parts.push(format!("if: {}", c));
+                }
+
+                if info_parts.is_empty() {
                     println!("  [ok] {}", task.id);
                 } else {
-                    println!(
-                        "  [ok] {}  (needs: {})",
-                        task.id,
-                        task.depends_on.join(", ")
-                    );
+                    println!("  [ok] {}  ({})", task.id, info_parts.join(", "));
                 }
             }
+
+            // Show pipeline defaults if set
+            if let Some(ref defaults) = pipeline.defaults {
+                let mut default_parts = Vec::new();
+                if let Some(ref t) = defaults.timeout {
+                    default_parts.push(format!("timeout: {}", t));
+                }
+                if let Some(r) = defaults.retries {
+                    default_parts.push(format!("retries: {}", r));
+                }
+                if defaults.retry_delay.is_some() {
+                    default_parts.push("retry_delay: set".to_string());
+                }
+                if !default_parts.is_empty() {
+                    println!("\n  defaults: {}", default_parts.join(", "));
+                }
+            }
+
             println!("\npipeline '{}' is valid.", path);
         }
 
@@ -181,17 +255,35 @@ async fn async_main() {
                 eprintln!("error: '{}' already exists. Remove it first.", output);
                 std::process::exit(1);
             }
-            let template = r#"tasks:
+            let template = r#"# Pipeline-level defaults (applied to all tasks unless overridden)
+# defaults:
+#   timeout: "5m"
+#   retries: 2
+#   retry_delay: "5s"
+
+# Pipeline-level environment variables
+# env:
+#   NODE_ENV: production
+
+tasks:
   - id: build
     command: "echo building..."
+    # timeout: "300s"
+    # retries: 3
+    # retry_delay:
+    #   strategy: exponential
+    #   base: "1s"
 
   - id: test
     command: "echo testing..."
     depends_on: [build]
+    # if: "$CI == 'true'"
+    # outputs: [TEST_RESULT]
 
   - id: deploy
     command: "echo deploying..."
     depends_on: [test]
+    # if: "tasks.test.result == 'success'"
 "#;
             std::fs::write(&output, template).unwrap_or_else(|e| die(&e.to_string()));
             println!("Created '{}'.", output);
@@ -209,8 +301,6 @@ async fn async_main() {
                 .await
             {
                 Ok(resp) if resp.status().is_success() || resp.status().as_u16() == 401 => {
-                    // 401 means the server is reachable (just auth check)
-                    // Extract user login from JWT payload (base64url decode, no verification needed client-side)
                     let user_login = decode_jwt_sub(&token).unwrap_or_else(|| "user".to_string());
                     let cfg = config::ConnectConfig {
                         dashboard_url: url.clone(),
@@ -252,10 +342,12 @@ async fn async_main() {
             dir,
             concurrency,
             no_tui,
+            verbose,
+            log_file,
+            keep_artifacts,
         } => {
             let workers = concurrency.unwrap_or_else(num_cpus::get);
 
-            // Collect all .yml / .yaml files in the directory
             let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
                 die(&format!("cannot read directory '{}': {}", dir, e));
             });
@@ -272,7 +364,7 @@ async fn async_main() {
                 })
                 .collect();
 
-            workflow_paths.sort(); // deterministic order
+            workflow_paths.sort();
 
             if workflow_paths.is_empty() {
                 eprintln!("error: no .yml/.yaml files found in '{}'", dir);
@@ -285,9 +377,26 @@ async fn async_main() {
                 "running workflows simultaneously"
             );
 
+            // Set up artifact run ID
+            let run_id = format!(
+                "run-all-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            );
+            unsafe {
+                std::env::set_var("RUSTYORCH_RUN_ID", &run_id);
+            }
+
             let reporter_cfg = config::load();
 
-            // Load all pipelines up front so errors surface before any execution starts
+            // Shared log writer if specified
+            let shared_log_writer = log_file.as_ref().map(|path| {
+                executor::create_log_writer(path)
+                    .unwrap_or_else(|e| die(&format!("cannot create log file '{}': {}", path, e)))
+            });
+
             let workflows: Vec<(String, Pipeline)> = workflow_paths
                 .iter()
                 .map(|path| {
@@ -303,18 +412,21 @@ async fn async_main() {
                 })
                 .collect();
 
-            let use_tui = !no_tui && std::io::stdout().is_terminal();
+            let use_tui = !no_tui && !verbose && std::io::stdout().is_terminal();
 
-            // Spawn each workflow as a concurrent tokio task
             let mut handles = Vec::new();
             for (name, pipeline) in workflows {
                 let cfg = reporter_cfg.clone();
+                let lw = shared_log_writer.clone();
                 let handle = tokio::spawn(async move {
                     let mut scheduler =
                         Scheduler::new(pipeline.clone(), workers).with_name(name.clone());
                     if let Some(c) = cfg {
                         let r = reporter::Reporter::new(c.dashboard_url.clone(), c.token.clone());
                         scheduler = scheduler.with_reporter(r);
+                    }
+                    if let Some(lw) = lw {
+                        scheduler = scheduler.with_log_writer(lw);
                     }
                     if use_tui {
                         let task_ids: Vec<String> =
@@ -328,7 +440,6 @@ async fn async_main() {
                 handles.push(handle);
             }
 
-            // Await all workflows and report final status
             let mut all_ok = true;
             for handle in handles {
                 match handle.await {
@@ -350,10 +461,29 @@ async fn async_main() {
                 }
             }
 
+            cleanup_artifacts(&run_id, keep_artifacts);
+
             if !all_ok {
                 std::process::exit(1);
             }
         }
+
+        Commands::Report { markdown, json } => match report::RunReport::load() {
+            Ok(r) => {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&r).unwrap());
+                } else if markdown {
+                    r.print_markdown();
+                } else {
+                    r.print_timing_summary();
+                }
+            }
+            Err(_) => {
+                eprintln!("No run report found. Run a pipeline first.");
+                eprintln!("Reports are saved to .rustyochestrator/last-run.json");
+                std::process::exit(1);
+            }
+        },
     }
 }
 
@@ -386,13 +516,24 @@ fn load_pipeline(path: &str) -> Pipeline {
     pipeline
 }
 
+/// Clean up artifact directory unless --keep-artifacts was passed.
+fn cleanup_artifacts(run_id: &str, keep: bool) {
+    let artifact_dir = format!(".rustyochestrator/artifacts/{}", run_id);
+    if std::path::Path::new(&artifact_dir).exists() {
+        if keep {
+            tracing::info!("keeping artifacts at: {}", artifact_dir);
+        } else {
+            let _ = std::fs::remove_dir_all(&artifact_dir);
+        }
+    }
+}
+
 /// Decode the `sub` claim from a JWT payload without verifying the signature.
 fn decode_jwt_sub(token: &str) -> Option<String> {
     let parts: Vec<&str> = token.splitn(3, '.').collect();
     if parts.len() != 3 {
         return None;
     }
-    // Base64url decode (pad to multiple of 4)
     let padded = {
         let p = parts[1];
         let pad = (4 - p.len() % 4) % 4;
@@ -406,7 +547,6 @@ fn decode_jwt_sub(token: &str) -> Option<String> {
 /// Minimal base64url decoder (avoids adding a base64 crate dependency)
 fn base64_decode(input: &str) -> Option<Vec<u8>> {
     let input = input.replace('-', "+").replace('_', "/");
-    // Use MIME base64 table
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut table = [0u8; 256];
     for (i, &c) in alphabet.iter().enumerate() {
@@ -426,7 +566,6 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
         out.push(n as u8);
         i += 4;
     }
-    // Handle remaining bytes
     if i + 2 < chars.len() {
         let a = table[chars[i] as usize] as u32;
         let b = table[chars[i + 1] as usize] as u32;
@@ -444,21 +583,12 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
 }
 
 /// Load `.env` from the current directory into the process environment.
-///
-/// Rules:
-/// - Lines starting with `#` and blank lines are ignored.
-/// - `export KEY=VALUE` and `KEY=VALUE` are both accepted.
-/// - Values wrapped in matching `"..."` or `'...'` are unquoted.
-/// - Variables already present in the environment are NOT overwritten, so a
-///   real shell export always takes precedence over the file.
 fn load_dotenv() {
     let Ok(content) = std::fs::read_to_string(".env") else {
-        return; // no .env file — silently skip
+        return;
     };
     for (key, value) in parse_dotenv(&content) {
         if std::env::var(&key).is_err() {
-            // SAFETY: load_dotenv() is called from the sync `main()` before `async_main()`
-            // starts the tokio runtime, so no other threads exist yet.
             unsafe {
                 std::env::set_var(&key, &value);
             }
@@ -467,7 +597,6 @@ fn load_dotenv() {
 }
 
 /// Parse the contents of a `.env` file into a list of (key, value) pairs.
-/// Pure function — no I/O, no environment mutation — safe to unit test.
 fn parse_dotenv(content: &str) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
     for raw in content.lines() {
@@ -475,7 +604,6 @@ fn parse_dotenv(content: &str) -> Vec<(String, String)> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        // strip optional leading "export "
         let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -485,7 +613,6 @@ fn parse_dotenv(content: &str) -> Vec<(String, String)> {
             continue;
         }
         let value = value.trim();
-        // strip a single layer of matching surrounding quotes
         let value = if value.len() >= 2
             && ((value.starts_with('"') && value.ends_with('"'))
                 || (value.starts_with('\'') && value.ends_with('\'')))
@@ -562,7 +689,6 @@ mod tests {
 
     #[test]
     fn test_mismatched_quotes_not_stripped() {
-        // opening " but closing ' — not a matching pair, kept as-is
         assert_eq!(
             parse_dotenv("FOO=\"bar'"),
             vec![("FOO".to_string(), "\"bar'".to_string())]
@@ -571,7 +697,6 @@ mod tests {
 
     #[test]
     fn test_value_with_equals_sign() {
-        // only the first '=' splits key/value; the rest belongs to the value
         assert_eq!(
             parse_dotenv("URL=https://example.com?a=1&b=2"),
             vec![("URL".to_string(), "https://example.com?a=1&b=2".to_string())]
@@ -595,7 +720,6 @@ mod tests {
 
     #[test]
     fn test_inline_comment_not_stripped() {
-        // inline comments are not part of the .env spec — the '#' is part of the value
         let pairs = parse_dotenv("FOO=bar # not a comment");
         assert_eq!(pairs[0].1, "bar # not a comment");
     }
@@ -651,18 +775,16 @@ BAZ=qux";
         assert_eq!(parse_dotenv(""), vec![]);
     }
 
-    // ── Env precedence (tests set_var directly; unique keys avoid collisions) ─
+    // ── Env precedence ───────────────────────────────────────────────────────
 
     #[test]
     fn test_existing_env_var_not_overwritten() {
         let key = "RUSTYORCH_TEST_PRECEDENCE_A9F3";
         unsafe { std::env::set_var(key, "original") };
 
-        // parse_dotenv returns the pair, but load_dotenv skips keys already set
         let pairs = parse_dotenv(&format!("{}=should_not_win\n", key));
-        assert_eq!(pairs.len(), 1); // parse_dotenv itself doesn't check the env
+        assert_eq!(pairs.len(), 1);
 
-        // simulate what load_dotenv does: only set if absent
         for (k, v) in &pairs {
             if std::env::var(k).is_err() {
                 unsafe { std::env::set_var(k, v) };
@@ -675,7 +797,6 @@ BAZ=qux";
     #[test]
     fn test_absent_env_var_is_set() {
         let key = "RUSTYORCH_TEST_ABSENT_B7C1";
-        // ensure it is not already set
         unsafe { std::env::remove_var(key) };
 
         let pairs = parse_dotenv(&format!("{}=hello_dotenv\n", key));
@@ -686,5 +807,142 @@ BAZ=qux";
         }
         assert_eq!(std::env::var(key).unwrap(), "hello_dotenv");
         unsafe { std::env::remove_var(key) };
+    }
+
+    // ── Pipeline parsing: new v0.1.4 fields ──────────────────────────────────
+
+    #[test]
+    fn test_parse_pipeline_with_timeout_and_retries() {
+        let yaml = r#"
+defaults:
+  timeout: "5m"
+  retries: 3
+  retry_delay: "2s"
+
+tasks:
+  - id: build
+    command: "echo build"
+    timeout: "10m"
+    retries: 1
+
+  - id: test
+    command: "echo test"
+    depends_on: [build]
+    outputs: [RESULT]
+    if: "$CI == 'true'"
+"#;
+        let pipeline = crate::pipeline::Pipeline::from_yaml(yaml).unwrap();
+        assert_eq!(pipeline.tasks.len(), 2);
+
+        let build = &pipeline.tasks[0];
+        assert_eq!(build.timeout.as_deref(), Some("10m"));
+        assert_eq!(build.retries, Some(1));
+
+        let test = &pipeline.tasks[1];
+        assert_eq!(test.outputs, vec!["RESULT".to_string()]);
+        assert_eq!(test.condition.as_deref(), Some("$CI == 'true'"));
+
+        // Pipeline defaults
+        let defaults = pipeline.defaults.as_ref().unwrap();
+        assert_eq!(defaults.timeout.as_deref(), Some("5m"));
+        assert_eq!(defaults.retries, Some(3));
+
+        // Effective values
+        assert_eq!(
+            pipeline.effective_timeout(build),
+            Some(std::time::Duration::from_secs(600))
+        );
+        assert_eq!(pipeline.effective_retries(build), 1);
+        assert_eq!(pipeline.effective_retries(test), 3); // falls back to default
+    }
+
+    #[test]
+    fn test_parse_duration() {
+        use crate::pipeline::parse_duration;
+        assert_eq!(
+            parse_duration("300s"),
+            Some(std::time::Duration::from_secs(300))
+        );
+        assert_eq!(
+            parse_duration("5m"),
+            Some(std::time::Duration::from_secs(300))
+        );
+        assert_eq!(
+            parse_duration("1h"),
+            Some(std::time::Duration::from_secs(3600))
+        );
+        assert_eq!(
+            parse_duration("1h30m"),
+            Some(std::time::Duration::from_secs(5400))
+        );
+        assert_eq!(parse_duration(""), None);
+        assert_eq!(parse_duration("0s"), None);
+    }
+
+    #[test]
+    fn test_condition_evaluation() {
+        use crate::pipeline::{TaskState, evaluate_condition};
+        use std::collections::HashMap;
+
+        let env: HashMap<String, String> = [("ENV".to_string(), "production".to_string())]
+            .into_iter()
+            .collect();
+        let results: HashMap<String, TaskState> = [
+            ("build".to_string(), TaskState::Success),
+            ("test".to_string(), TaskState::Failed),
+        ]
+        .into_iter()
+        .collect();
+
+        assert!(evaluate_condition("true", &env, &results));
+        assert!(!evaluate_condition("false", &env, &results));
+        assert!(evaluate_condition("$ENV == 'production'", &env, &results));
+        assert!(!evaluate_condition("$ENV == 'staging'", &env, &results));
+        assert!(evaluate_condition("$ENV != 'staging'", &env, &results));
+        assert!(evaluate_condition(
+            "tasks.build.result == 'success'",
+            &env,
+            &results
+        ));
+        assert!(evaluate_condition(
+            "tasks.test.result == 'failure'",
+            &env,
+            &results
+        ));
+    }
+
+    #[test]
+    fn test_retry_delay_fixed() {
+        use crate::pipeline::RetryDelay;
+        let delay = RetryDelay::Fixed("5s".to_string());
+        assert_eq!(
+            delay.delay_for_attempt(0),
+            std::time::Duration::from_secs(5)
+        );
+        assert_eq!(
+            delay.delay_for_attempt(1),
+            std::time::Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn test_retry_delay_exponential() {
+        use crate::pipeline::RetryDelay;
+        let delay = RetryDelay::Structured {
+            strategy: "exponential".to_string(),
+            base: "1s".to_string(),
+        };
+        assert_eq!(
+            delay.delay_for_attempt(0),
+            std::time::Duration::from_secs(1)
+        );
+        assert_eq!(
+            delay.delay_for_attempt(1),
+            std::time::Duration::from_secs(2)
+        );
+        assert_eq!(
+            delay.delay_for_attempt(2),
+            std::time::Duration::from_secs(4)
+        );
     }
 }

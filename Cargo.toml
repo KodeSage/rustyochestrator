@@ -1,6 +1,6 @@
 [package]
 name = "rustyochestrator"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 description = "A high-performance modular, open-source CI/CD ochestrator and pipeline runner with parallel execution and smart caching."
 license = "MIT"
