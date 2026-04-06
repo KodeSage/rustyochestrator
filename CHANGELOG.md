@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.1.4] — 2026-04-06
+## [0.1.4] — 2026-04-07
 
 A major feature release adding task timeouts, configurable retries, output capture,
 conditional execution, matrix builds, artifact storage, run reports, and new CLI flags.
