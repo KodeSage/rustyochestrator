@@ -204,7 +204,9 @@ jobs:
 }
 
 #[test]
-fn test_step_with_expression_in_run_command_is_skipped() {
+fn test_step_with_expression_in_run_command_resolved_or_stripped() {
+    // Since v0.1.4, context variables like ${{ matrix.os }} are resolved where possible.
+    // Unresolvable expressions are stripped from the command (not skipped entirely).
     let yaml = r#"
 on: push
 jobs:
@@ -217,8 +219,21 @@ jobs:
         run: cargo build
 "#;
     let pipeline = parse_github_workflow(yaml).unwrap();
-    assert_eq!(pipeline.tasks.len(), 1);
-    assert_eq!(pipeline.tasks[0].command, "cargo build");
+    assert_eq!(pipeline.tasks.len(), 2);
+    // The matrix expression was stripped, leaving "echo "
+    let matrix_task = pipeline
+        .tasks
+        .iter()
+        .find(|t| t.id.contains("Matrix"))
+        .unwrap();
+    assert_eq!(matrix_task.command.trim(), "echo");
+    // Static step still works
+    let static_task = pipeline
+        .tasks
+        .iter()
+        .find(|t| t.command == "cargo build")
+        .unwrap();
+    assert_eq!(static_task.command, "cargo build");
 }
 
 #[test]

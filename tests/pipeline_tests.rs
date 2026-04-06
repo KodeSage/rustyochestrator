@@ -377,6 +377,7 @@ fn test_task_state_variants_are_distinct() {
         TaskState::Success,
         TaskState::Failed,
         TaskState::Skipped,
+        TaskState::ConditionSkip,
     ];
     for (i, s1) in states.iter().enumerate() {
         for (j, s2) in states.iter().enumerate() {

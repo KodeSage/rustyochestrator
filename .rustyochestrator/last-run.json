@@ -1,0 +1,216 @@
+{
+  "pipeline_name": "ci",
+  "success": true,
+  "total_tasks": 23,
+  "cached_tasks": 0,
+  "failed_tasks": 0,
+  "condition_skipped": 0,
+  "total_duration_ms": 51745,
+  "tasks": [
+    {
+      "id": "integration__Run_native_pipeline",
+      "status": "success",
+      "duration_ms": 20717,
+      "depends_on": [
+        "build__ubuntu-latest__upload_rustyochestrator_macOS"
+      ],
+      "command": "cargo run -- run examples/pipeline.yaml"
+    },
+    {
+      "id": "test__Run_all_tests",
+      "status": "success",
+      "duration_ms": 19050,
+      "depends_on": [
+        "lint__cargo_clippy"
+      ],
+      "command": "cargo test --all"
+    },
+    {
+      "id": "lint__cargo_clippy",
+      "status": "success",
+      "duration_ms": 9070,
+      "depends_on": [
+        "lint__cargo_fmt___check"
+      ],
+      "command": "cargo clippy --all-targets --all-features -- -D warnings"
+    },
+    {
+      "id": "integration__Run_GitHub_Actions_example_(via_rustyochestrator)",
+      "status": "success",
+      "duration_ms": 8979,
+      "depends_on": [
+        "integration__Run_again_(all_tasks_should_be_cache_hits)"
+      ],
+      "command": "cargo run -- run examples/github_actions.yaml"
+    },
+    {
+      "id": "integration__Run_again_(all_tasks_should_be_cache_hits)",
+      "status": "success",
+      "duration_ms": 6905,
+      "depends_on": [
+        "integration__Run_native_pipeline"
+      ],
+      "command": "cargo run -- run examples/pipeline.yaml 2>&1 | tee /tmp/rustyochestrator_out.txt\ngrep -c \"CACHE HIT\" /tmp/rustyochestrator_out.txt | grep -q \"^7$\" \\\n  && echo \"✓ all 7 tasks were cache hits\" \\\n  || (echo \"✗ expected 4 cache hits\" && exit 1)"
+    },
+    {
+      "id": "integration__Scaffold_and_validate_a_new_pipeline",
+      "status": "success",
+      "duration_ms": 2136,
+      "depends_on": [
+        "integration__Print_dependency_graph"
+      ],
+      "command": "cargo run -- init /tmp/test_init_pipeline.yaml\ncargo run -- validate /tmp/test_init_pipeline.yaml"
+    },
+    {
+      "id": "test__Run_executor_tests",
+      "status": "success",
+      "duration_ms": 1282,
+      "depends_on": [
+        "test__Run_github_tests"
+      ],
+      "command": "cargo test --test executor_tests"
+    },
+    {
+      "id": "integration__List_pipeline_execution_order",
+      "status": "success",
+      "duration_ms": 1108,
+      "depends_on": [
+        "integration__Validate_pipeline_without_running"
+      ],
+      "command": "cargo run -- list examples/pipeline.yaml"
+    },
+    {
+      "id": "integration__Print_dependency_graph",
+      "status": "success",
+      "duration_ms": 1089,
+      "depends_on": [
+        "integration__List_pipeline_execution_order"
+      ],
+      "command": "cargo run -- graph examples/pipeline.yaml"
+    },
+    {
+      "id": "integration__Validate_pipeline_without_running",
+      "status": "success",
+      "duration_ms": 1033,
+      "depends_on": [
+        "integration__Run_GitHub_Actions_example_(via_rustyochestrator)"
+      ],
+      "command": "cargo run -- validate examples/pipeline.yaml"
+    },
+    {
+      "id": "build__macos-latest__cargo_build___release",
+      "status": "success",
+      "duration_ms": 467,
+      "depends_on": [
+        "lint__cargo_clippy"
+      ],
+      "command": "cargo build --release"
+    },
+    {
+      "id": "build__ubuntu-latest__cargo_build___release",
+      "status": "success",
+      "duration_ms": 419,
+      "depends_on": [
+        "lint__cargo_clippy"
+      ],
+      "command": "cargo build --release"
+    },
+    {
+      "id": "test__Run_main.rs_unit_tests_(parse_dotenv)",
+      "status": "success",
+      "duration_ms": 329,
+      "depends_on": [
+        "test__Run_errors_tests"
+      ],
+      "command": "cargo test --bin rustyochestrator"
+    },
+    {
+      "id": "test__Run_pipeline_tests",
+      "status": "success",
+      "duration_ms": 290,
+      "depends_on": [
+        "test__Run_all_tests"
+      ],
+      "command": "cargo test --test pipeline_tests"
+    },
+    {
+      "id": "test__Run_errors_tests",
+      "status": "success",
+      "duration_ms": 283,
+      "depends_on": [
+        "test__Run_reporter_tests"
+      ],
+      "command": "cargo test --test errors_tests"
+    },
+    {
+      "id": "test__Run_config_tests",
+      "status": "success",
+      "duration_ms": 246,
+      "depends_on": [
+        "test__Run_scheduler_tests"
+      ],
+      "command": "cargo test --test config_tests"
+    },
+    {
+      "id": "test__Run_scheduler_tests",
+      "status": "success",
+      "duration_ms": 240,
+      "depends_on": [
+        "test__Run_executor_tests"
+      ],
+      "command": "cargo test --test scheduler_tests"
+    },
+    {
+      "id": "lint__cargo_fmt___check",
+      "status": "success",
+      "duration_ms": 225,
+      "command": "cargo fmt --all -- --check"
+    },
+    {
+      "id": "test__Run_reporter_tests",
+      "status": "success",
+      "duration_ms": 217,
+      "depends_on": [
+        "test__Run_config_tests"
+      ],
+      "command": "cargo test --test reporter_tests"
+    },
+    {
+      "id": "test__Run_github_tests",
+      "status": "success",
+      "duration_ms": 185,
+      "depends_on": [
+        "test__Run_cache_tests"
+      ],
+      "command": "cargo test --test github_tests"
+    },
+    {
+      "id": "test__Run_cache_tests",
+      "status": "success",
+      "duration_ms": 177,
+      "depends_on": [
+        "test__Run_pipeline_tests"
+      ],
+      "command": "cargo test --test cache_tests"
+    },
+    {
+      "id": "build__ubuntu-latest__upload_rustyochestrator_macOS",
+      "status": "success",
+      "duration_ms": 17,
+      "depends_on": [
+        "build__ubuntu-latest__cargo_build___release"
+      ],
+      "command": "mkdir -p .rustyochestrator/artifacts/$RUSTYORCH_RUN_ID/rustyochestrator-macOS && cp -r target/release/rustyochestrator\ntarget/release/rustyochestrator.exe\n .rustyochestrator/artifacts/$RUSTYORCH_RUN_ID/rustyochestrator-macOS/ 2>/dev/null || echo '[warn] no files matched: target/release/rustyochestrator\ntarget/release/rustyochestrator.exe\n'"
+    },
+    {
+      "id": "build__macos-latest__upload_rustyochestrator_macOS",
+      "status": "success",
+      "duration_ms": 12,
+      "depends_on": [
+        "build__macos-latest__cargo_build___release"
+      ],
+      "command": "mkdir -p .rustyochestrator/artifacts/$RUSTYORCH_RUN_ID/rustyochestrator-macOS && cp -r target/release/rustyochestrator\ntarget/release/rustyochestrator.exe\n .rustyochestrator/artifacts/$RUSTYORCH_RUN_ID/rustyochestrator-macOS/ 2>/dev/null || echo '[warn] no files matched: target/release/rustyochestrator\ntarget/release/rustyochestrator.exe\n'"
+    }
+  ],
+  "timestamp": "2026-04-06T22:23:00Z"
+}
