@@ -5,6 +5,7 @@ pub mod errors;
 pub mod executor;
 pub mod github;
 pub mod pipeline;
+pub mod report;
 pub mod reporter;
 pub mod scheduler;
 pub mod tui;

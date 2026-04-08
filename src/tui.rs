@@ -195,6 +195,21 @@ impl Dashboard {
         self.refresh_summary_with(done);
     }
 
+    /// A task that was skipped because its `if:` condition evaluated to false.
+    pub fn task_condition_skipped(&self, id: &str) {
+        if let Some(pb) = self.task_bars.get(id) {
+            pb.set_style(ProgressStyle::with_template("  {msg}").unwrap());
+            pb.finish_with_message(format!(
+                "{}  {}",
+                dim("○"),
+                dim(&format!("{id:<32}  [if: skipped]"))
+            ));
+        }
+        let done = self.done.fetch_add(1, Ordering::Relaxed) + 1;
+        self.summary.inc(1);
+        self.refresh_summary_with(done);
+    }
+
     /// Freeze the dashboard with a final status line.
     pub fn finish(&self, success: bool) {
         let status = if success {

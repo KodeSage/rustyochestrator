@@ -20,6 +20,21 @@ pub enum Commands {
         /// Disable the TUI dashboard and use plain log output
         #[arg(long)]
         no_tui: bool,
+        /// Stream all task stdout/stderr inline (forces plain output)
+        #[arg(long)]
+        verbose: bool,
+        /// Print what would execute without running anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Show dependency resolution steps before execution
+        #[arg(long)]
+        trace_deps: bool,
+        /// Write combined task output to a log file
+        #[arg(long)]
+        log_file: Option<String>,
+        /// Keep artifacts after run completes (for debugging)
+        #[arg(long)]
+        keep_artifacts: bool,
     },
 
     /// Validate a pipeline without running it
@@ -77,6 +92,25 @@ pub enum Commands {
         /// Disable the TUI dashboard and use plain log output
         #[arg(long)]
         no_tui: bool,
+        /// Stream all task stdout/stderr inline (forces plain output)
+        #[arg(long)]
+        verbose: bool,
+        /// Write combined task output to a log file
+        #[arg(long)]
+        log_file: Option<String>,
+        /// Keep artifacts after run completes (for debugging)
+        #[arg(long)]
+        keep_artifacts: bool,
+    },
+
+    /// Show the last pipeline run report
+    Report {
+        /// Output as Markdown instead of plain text
+        #[arg(long)]
+        markdown: bool,
+        /// Output the raw JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
