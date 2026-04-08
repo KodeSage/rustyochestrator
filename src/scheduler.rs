@@ -398,6 +398,70 @@ impl Scheduler {
             return Ok(true);
         }
 
+        // Drain tasks that become ready from boot-phase condition-skips.
+        // When all boot tasks are condition-skipped, `running` stays 0 and the
+        // main `while running > 0` loop would never enter.  We need to keep
+        // promoting newly-ready tasks (and evaluating their conditions) until
+        // either something actually starts running or nothing is left.
+        while running == 0 {
+            let ready = collect_ready(&states, &tasks_map);
+            if ready.is_empty() {
+                break;
+            }
+            let mut any_spawned = false;
+            for id in ready {
+                let task = &tasks_map[&id];
+                if let Some(ref cond) = task.condition {
+                    let env = resolved_envs.get(&id).cloned().unwrap_or_default();
+                    if !evaluate_condition(cond, &env, &states) {
+                        if !quiet {
+                            println!(
+                                "{}[SKIP] Task '{}' condition evaluated to false: {}",
+                                prefix, id, cond
+                            );
+                        }
+                        states.insert(id.clone(), TaskState::ConditionSkip);
+                        task_timings.insert(id.clone(), (0, "condition_skip".to_string()));
+                        if let Some(ref d) = self.dashboard {
+                            d.task_condition_skipped(&id);
+                        }
+                        continue;
+                    }
+                }
+                states.insert(id.clone(), TaskState::Running);
+                running += 1;
+                any_spawned = true;
+                if let Some(ref d) = self.dashboard {
+                    d.task_started(&id);
+                }
+                spawn_task(
+                    tasks_map[&id].clone(),
+                    tx.clone(),
+                    sem.clone(),
+                    cache.clone(),
+                    prefix.clone(),
+                    quiet,
+                    resolved_envs.clone(),
+                    task_configs.clone(),
+                    task_outputs.clone(),
+                    self.log_writer.clone(),
+                );
+            }
+            // If every ready task was condition-skipped, loop again to pick up
+            // the next wave of dependents.  If nothing was ready at all, break.
+            if any_spawned {
+                break;
+            }
+        }
+
+        if running == 0 && states.values().all(|s| *s != TaskState::Pending) {
+            // All reachable tasks were condition-skipped
+            if let Some(ref d) = self.dashboard {
+                d.finish(true);
+            }
+            return Ok(true);
+        }
+
         // Main event loop
         while running > 0 {
             let outcome = match rx.recv().await {

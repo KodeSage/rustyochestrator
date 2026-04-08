@@ -266,6 +266,9 @@ fn resolve_context_vars(s: &str, env: &HashMap<String, String>) -> String {
             env.get(env_key.trim())
                 .cloned()
                 .or_else(|| std::env::var(env_key.trim()).ok())
+        } else if let Some(matrix_key) = inner.strip_prefix("matrix.") {
+            // Resolve matrix.foo → look up "foo" in the env map
+            env.get(matrix_key.trim()).cloned()
         } else if inner.starts_with("secrets.") {
             // Keep secrets references — they're resolved at runtime
             None

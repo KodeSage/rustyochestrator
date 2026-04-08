@@ -114,14 +114,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 🔥 Generate changelog
-      - name: Generate changelog
+      # 🔥 Extract changelog for this version from CHANGELOG.md
+      - name: Extract changelog
         run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -z "$PREV_TAG" ]; then
-            git log --pretty=format:"- %s" > CHANGELOG_GEN.md
-          else
-            git log $PREV_TAG..HEAD --pretty=format:"- %s" > CHANGELOG_GEN.md
+          VERSION=${GITHUB_REF_NAME#v}
+          # Extract the section between this version header and the next version header (or EOF)
+          awk "/^## \\[${VERSION}\\]/{found=1; next} /^## \\[/{if(found) exit} found" CHANGELOG.md > CHANGELOG_GEN.md
+          # Fall back to git log if the version wasn't found in CHANGELOG.md
+          if [ ! -s CHANGELOG_GEN.md ]; then
+            echo "Version ${VERSION} not found in CHANGELOG.md, falling back to git log"
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+            if [ -z "$PREV_TAG" ]; then
+              git log --pretty=format:"- %s" > CHANGELOG_GEN.md
+            else
+              git log $PREV_TAG..HEAD --pretty=format:"- %s" > CHANGELOG_GEN.md
+            fi
           fi
 
       # 🔥 Generate install.sh
