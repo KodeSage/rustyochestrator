@@ -371,6 +371,11 @@ pub fn evaluate_condition(
         return false;
     }
 
+    // Handle negation: !expr
+    if let Some(inner) = expr.strip_prefix('!') {
+        return !evaluate_condition(inner.trim(), env, task_results);
+    }
+
     // Try comparison: LHS == RHS or LHS != RHS
     let (lhs, op, rhs) = if let Some(pos) = expr.find("!=") {
         let l = expr[..pos].trim();
@@ -382,7 +387,12 @@ pub fn evaluate_condition(
         (l, "==", r)
     } else {
         // Bare variable check: truthy if set and non-empty
+        // Support "matrix.foo" → look up "foo" in env
         let var_name = expr.strip_prefix('$').unwrap_or(expr);
+        let var_name = var_name
+            .strip_prefix("matrix.")
+            .or_else(|| var_name.strip_prefix("env."))
+            .unwrap_or(var_name);
         let val = env
             .get(var_name)
             .cloned()
@@ -419,6 +429,14 @@ pub fn evaluate_condition(
                     _ => "pending".to_string(),
                 };
             }
+        }
+        // matrix.foo / env.foo → look up "foo" in env
+        let key = s
+            .strip_prefix("matrix.")
+            .or_else(|| s.strip_prefix("env."))
+            .unwrap_or(s);
+        if let Some(val) = env.get(key) {
+            return val.clone();
         }
         s.to_string()
     };
